@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">True Light</string>
+    <string name="ime_name">True Light Keyboard</string>
+    <string name="subtype_vi_telex">Tiếng Việt (Telex)</string>
+    <string name="subtype_en_us">English (US)</string>
+</resources>

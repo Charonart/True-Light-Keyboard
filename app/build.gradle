@@ -1,0 +1,53 @@
+plugins {
+    id 'com.android.application'
+}
+
+android {
+    namespace 'com.truelight.ime'
+    compileSdk 34
+
+    defaultConfig {
+        applicationId "com.truelight.ime"
+        minSdk 21
+        targetSdk 34
+        versionCode 1
+        versionName "1.0.0"
+
+        testInstrumentationRunner "android.test.InstrumentationTestRunner"
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled true
+            shrinkResources true
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+        }
+        debug {
+            minifyEnabled false
+            debuggable true
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+
+    packaging {
+        resources {
+            excludes += [
+                'META-INF/*.version',
+                'META-INF/*.txt',
+                'META-INF/NOTICE',
+                'META-INF/LICENSE',
+                'META-INF/DEPENDENCIES'
+            ]
+        }
+    }
+}
+
+// 100% Pure Kotlin/Java stdlib - ZERO external dependencies (No AndroidX, No EmojiCompat, No Play Services)
+// Built-in Kotlin in AGP 9.0+ provides kotlin-stdlib automatically.
+dependencies {
+    testImplementation 'junit:junit:4.13.2'
+}
