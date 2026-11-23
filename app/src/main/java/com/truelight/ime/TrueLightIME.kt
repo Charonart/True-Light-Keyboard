@@ -247,7 +247,8 @@ class TrueLightIME : InputMethodService(),
             languageSpec = activeLanguage,
             multipleLanguages = prefs.enabledLanguages.size > 1,
             longPressEnterAction = prefs.longPressEnterAction,
-            showEmojiKey = prefs.showEmojiKey
+            showEmojiKey = prefs.showEmojiKey,
+            keypressAnimation = prefs.keypressAnimationEnabled
         )
         updateNavigationBarColor()
     }
@@ -432,6 +433,17 @@ class TrueLightIME : InputMethodService(),
         suggestionManager.clearUndo()
         broker.commitText(text, 1)
         updateAutoCaps()
+        keyboardView?.invalidate()
+    }
+
+    override fun onImageClipSelected(uriString: String, mimeType: String) {
+        if (activeEngine.length() > 0) {
+            broker.finishComposingText()
+            activeEngine.reset()
+            suggestionManager.clearSuggestions()
+        }
+        suggestionManager.clearUndo()
+        broker.commitImageClip(uriString, mimeType)
         keyboardView?.invalidate()
     }
 }

@@ -48,19 +48,32 @@ jobs:
           KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
         run: |
+          CLEAN_PASS=$(printf '%s' "$KEYSTORE_PASSWORD" | tr -d '\r\n')
+          CLEAN_ALIAS=$(printf '%s' "$KEY_ALIAS" | tr -d '\r\n' | xargs)
+          CLEAN_KEYPASS=$(printf '%s' "$KEY_PASSWORD" | tr -d '\r\n')
+
           echo "Secret presence check:"
           echo "  KEYSTORE_BASE64:   $([ -n "$KEYSTORE_BASE64" ] && echo SET || echo MISSING)"
-          echo "  KEYSTORE_PASSWORD: $([ -n "$KEYSTORE_PASSWORD" ] && echo SET || echo MISSING)"
-          echo "  KEY_ALIAS:         $([ -n "$KEY_ALIAS" ] && echo SET || echo MISSING)"
-          echo "  KEY_PASSWORD:      $([ -n "$KEY_PASSWORD" ] && echo SET || echo MISSING)"
+          echo "  KEYSTORE_PASSWORD: $([ -n "$CLEAN_PASS" ] && echo SET || echo MISSING)"
+          echo "  KEY_ALIAS:         $([ -n "$CLEAN_ALIAS" ] && echo SET || echo MISSING)"
+          echo "  KEY_PASSWORD:      $([ -n "$CLEAN_KEYPASS" ] && echo SET || echo MISSING)"
 
-          if [ -n "$KEYSTORE_BASE64" ] && [ -n "$KEYSTORE_PASSWORD" ] && [ -n "$KEY_ALIAS" ] && [ -n "$KEY_PASSWORD" ]; then
-            printf '%s' "$KEYSTORE_BASE64" | tr -d '\r\n ' | base64 --decode > "$RUNNER_TEMP/release.jks"
-            if keytool -list -keystore "$RUNNER_TEMP/release.jks" -storepass "$KEYSTORE_PASSWORD" -alias "$KEY_ALIAS" >/dev/null 2>&1; then
+          if [ -n "$KEYSTORE_BASE64" ] && [ -n "$CLEAN_PASS" ] && [ -n "$CLEAN_ALIAS" ] && [ -n "$CLEAN_KEYPASS" ]; then
+            if ! printf '%s' "$KEYSTORE_BASE64" | tr -d '\r\n \t' | base64 --decode > "$RUNNER_TEMP/release.jks"; then
+              echo "::warning::KEYSTORE_BASE64 is not valid base64. Falling back to debug+unsigned APKs."
+              echo "has_keystore=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            JKS_SIZE=$(stat -c%s "$RUNNER_TEMP/release.jks" 2>/dev/null || echo 0)
+            echo "Decoded release.jks size: ${JKS_SIZE} bytes"
+
+            ERR_OUT=$(keytool -list -keystore "$RUNNER_TEMP/release.jks" -storepass "$CLEAN_PASS" -alias "$CLEAN_ALIAS" 2>&1 || true)
+            if echo "$ERR_OUT" | grep -qi "PrivateKeyEntry"; then
               echo "has_keystore=true" >> "$GITHUB_OUTPUT"
               echo "OK: Release keystore decoded and verified with alias."
             else
-              echo "::warning::Keystore decoded, but keytool verification failed (wrong KEYSTORE_PASSWORD, KEY_ALIAS, or corrupted KEYSTORE_BASE64). Falling back to debug+unsigned APKs."
+              SAFE_REASON=$(echo "$ERR_OUT" | head -n 3 | tr '\n' ' ')
+              echo "::warning::keytool verification failed (${SAFE_REASON}). Check that KEYSTORE_BASE64 matches the same keystore as KEYSTORE_PASSWORD & KEY_ALIAS. Falling back to debug+unsigned APKs."
               rm -f "$RUNNER_TEMP/release.jks"
               echo "has_keystore=false" >> "$GITHUB_OUTPUT"
             fi

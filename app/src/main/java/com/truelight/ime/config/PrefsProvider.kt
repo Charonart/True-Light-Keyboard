@@ -77,6 +77,7 @@ class PrefsProvider : ContentProvider() {
                     putString(KeyboardPrefs.KEY_CUSTOM_CSS, prefs.customCss)
                     putInt(KeyboardPrefs.KEY_LONG_PRESS_ENTER_ACTION, prefs.longPressEnterAction)
                     putBoolean(KeyboardPrefs.KEY_SHOW_EMOJI_KEY, prefs.showEmojiKey)
+                    putBoolean(KeyboardPrefs.KEY_KEYPRESS_ANIMATION, prefs.keypressAnimationEnabled)
                     putInt(KeyboardPrefs.KEY_DICT_REVISION, prefs.dictRevision)
                     putInt(KeyboardPrefs.KEY_HISTORY_REVISION, prefs.historyRevision)
                     putMemoryStats(this)
@@ -109,6 +110,7 @@ class PrefsProvider : ContentProvider() {
                     KeyboardPrefs.KEY_CLIPBOARD_ENABLED -> prefs.clipboardEnabled = value
                     KeyboardPrefs.KEY_CUSTOM_CSS_ENABLED -> prefs.customCssEnabled = value
                     KeyboardPrefs.KEY_SHOW_EMOJI_KEY -> prefs.showEmojiKey = value
+                    KeyboardPrefs.KEY_KEYPRESS_ANIMATION -> prefs.keypressAnimationEnabled = value
                     else -> prefs.prefs.edit().putBoolean(key, value).apply()
                 }
                 ctx.contentResolver.notifyChange(CONTENT_URI, null)

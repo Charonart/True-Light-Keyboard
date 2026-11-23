@@ -40,8 +40,10 @@ class KeyboardPrefs(context: Context) {
         const val ENTER_LONG_PRESS_NONE = 0
         const val ENTER_LONG_PRESS_EMOJI = 1
         const val ENTER_LONG_PRESS_NEWLINE = 2
+        const val ENTER_LONG_PRESS_POPUP = 3
 
         const val KEY_SHOW_EMOJI_KEY = "show_emoji_key"
+        const val KEY_KEYPRESS_ANIMATION = "keypress_animation"
 
         const val THEME_SYSTEM = 0
         const val THEME_DARK = 1
@@ -191,13 +193,17 @@ class KeyboardPrefs(context: Context) {
     }
 
     var longPressEnterAction: Int
-        get() = prefs.getInt(KEY_LONG_PRESS_ENTER_ACTION, ENTER_LONG_PRESS_EMOJI)
-            .coerceIn(ENTER_LONG_PRESS_NONE, ENTER_LONG_PRESS_NEWLINE)
+        get() = prefs.getInt(KEY_LONG_PRESS_ENTER_ACTION, ENTER_LONG_PRESS_POPUP)
+            .coerceIn(ENTER_LONG_PRESS_NONE, ENTER_LONG_PRESS_POPUP)
         set(value) = prefs.edit()
-            .putInt(KEY_LONG_PRESS_ENTER_ACTION, value.coerceIn(ENTER_LONG_PRESS_NONE, ENTER_LONG_PRESS_NEWLINE))
+            .putInt(KEY_LONG_PRESS_ENTER_ACTION, value.coerceIn(ENTER_LONG_PRESS_NONE, ENTER_LONG_PRESS_POPUP))
             .apply()
 
     var showEmojiKey: Boolean
-        get() = prefs.getBoolean(KEY_SHOW_EMOJI_KEY, true)
+        get() = prefs.getBoolean(KEY_SHOW_EMOJI_KEY, false)
         set(value) = prefs.edit().putBoolean(KEY_SHOW_EMOJI_KEY, value).apply()
+
+    var keypressAnimationEnabled: Boolean
+        get() = prefs.getBoolean(KEY_KEYPRESS_ANIMATION, true)
+        set(value) = prefs.edit().putBoolean(KEY_KEYPRESS_ANIMATION, value).apply()
 }

@@ -1,11 +1,15 @@
 package com.truelight.ime.bridge
 
+import android.content.ClipDescription
+import android.net.Uri
+import android.os.Build
 import android.os.SystemClock
 import android.text.InputType
 import android.view.KeyCharacterMap
 import android.view.KeyEvent
 import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputConnection
+import android.view.inputmethod.InputContentInfo
 import com.truelight.ime.engine.InputEngine
 import com.truelight.ime.suggest.SuggestionManager
 import kotlin.math.abs
@@ -102,6 +106,63 @@ class InputConnectionBroker {
             success = ic.commitText(text, newCursorPosition)
         }
         return success
+    }
+
+    /**
+     * Commits an image content:// URI to the active editor via InputConnection.commitContent() (API 25+).
+     * Checks EditorInfo.contentMimeTypes when non-empty; catches SecurityException/Exception cleanly.
+     */
+    fun commitImageClip(uriString: String, mimeType: String): Boolean {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.N_MR1) return false
+        val ic = inputConnection ?: return false
+        if (uriString.isBlank() || mimeType.isBlank()) return false
+
+        lastCommittedFromSuggestion = false
+        lastSpaceTimeMs = 0L
+
+        val supportedMimes = editorInfo?.contentMimeTypes
+        if (supportedMimes != null && supportedMimes.isNotEmpty() && !isMimeAccepted(supportedMimes, mimeType)) {
+            return false
+        }
+
+        return try {
+            val contentInfo = InputContentInfo(
+                Uri.parse(uriString),
+                ClipDescription("Image", arrayOf(mimeType)),
+                null
+            )
+            ic.commitContent(
+                contentInfo,
+                InputConnection.INPUT_CONTENT_GRANT_READ_URI_PERMISSION,
+                null
+            )
+        } catch (_: SecurityException) {
+            false
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    internal fun isMimeAccepted(supportedMimes: Array<out String>, mimeType: String): Boolean {
+        val target = mimeType.trim()
+        if (target.isEmpty()) return false
+        val targetIsWildcard = target.endsWith("/*")
+        val targetPrefix = if (targetIsWildcard) target.substring(0, target.length - 1) else null
+
+        for (raw in supportedMimes) {
+            val supported = raw.trim()
+            if (supported.isEmpty()) continue
+            if (supported == "*/*") return true
+            if (supported.equals(target, ignoreCase = true)) return true
+            if (supported.endsWith("/*")) {
+                val prefix = supported.substring(0, supported.length - 1)
+                if (target.startsWith(prefix, ignoreCase = true)) return true
+            }
+            if (targetPrefix != null && supported.startsWith(targetPrefix, ignoreCase = true)) {
+                return true
+            }
+        }
+        return false
     }
 
     /**

@@ -1,11 +1,17 @@
 package com.truelight.ime.ui
 
 import android.content.Context
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.graphics.Canvas
 import android.graphics.Paint
+import android.graphics.Path
+import android.graphics.Rect
 import android.graphics.RectF
+import android.net.Uri
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.view.HapticFeedbackConstants
 import android.view.MotionEvent
 import android.view.View
@@ -48,19 +54,36 @@ class KeyboardCanvasView(context: Context) : View(context) {
         fun onOpenSettings()
         fun onSuggestionSelected(word: String)
         fun onClipSelected(text: String)
+        fun onImageClipSelected(uriString: String, mimeType: String)
     }
 
     companion object {
         private const val MAX_POINTERS = 4
         private const val STRIP_ACTION_NONE = 0
         private const val STRIP_ACTION_CLIPBOARD = 1
-        private const val STRIP_ACTION_SETTINGS = 2
+        private const val STRIP_ACTION_EMOJI = 2
+        private const val STRIP_ACTION_LANG_PILL = 3
+        private const val STRIP_ACTION_LANG_CENTER = 4
+        private const val STRIP_ACTION_SETTINGS = 5
 
         private const val CLIP_TITLE = "Clipboard"
         private const val CLIP_BACK = "Back"
         private const val CLIP_CLEAR = "Clear"
         private const val CLIP_EMPTY = "Clipboard is empty"
+        private const val CLIP_IMAGE_LABEL = "Image"
+        private const val CLIP_IMAGE_SUB = "Tap to insert"
+        private const val CLIP_IMAGE_PNG = "PNG image · Tap to insert"
+        private const val CLIP_IMAGE_JPEG = "JPEG image · Tap to insert"
+        private const val CLIP_IMAGE_WEBP = "WebP image · Tap to insert"
+        private const val CLIP_IMAGE_GIF = "GIF image · Tap to insert"
         private const val ELLIPSIS = "…"
+
+        private const val MAX_CLIP_THUMBNAILS = 5
+        private const val CLIP_THUMB_TARGET_PX = 120
+
+        private const val ANIM_BUFFER_SIZE = 8
+        private const val ANIM_DURATION_MS = 95L
+        private const val ENTER_POPUP_LONG_PRESS_MS = 340L
     }
 
     var actionListener: OnKeyboardActionListener? = null
@@ -100,14 +123,36 @@ class KeyboardCanvasView(context: Context) : View(context) {
     var keyboardHeightDp: Int = KeyboardPrefs.DEFAULT_HEIGHT_DP
     var hapticEnabled: Boolean = true
     var longPressSymbolsEnabled: Boolean = true
-    var longPressEnterAction: Int = KeyboardPrefs.ENTER_LONG_PRESS_EMOJI
+    var longPressEnterAction: Int = KeyboardPrefs.ENTER_LONG_PRESS_POPUP
+    var keypressAnimationEnabled: Boolean = true
 
     private val stripHeightPx: Float = 38f * density
     private val stripSideBtnWidthPx: Float = 44f * density
+    private val stripLangBtnWidthPx: Float = 48f * density
     private var currentStripHeight: Float = 0f
     private var pressedSuggestionIndex: Int = -1
     private var pressedStripAction: Int = STRIP_ACTION_NONE
     private var stripPointerId: Int = -1
+
+    // Lazy micro-thumbnail cache for clipboard image clips (max 5 entries, RGB_565 ~28 KB/img)
+    // Recycled immediately whenever clipboard closes or keyboard hides
+    private val clipThumbnails = HashMap<String, Bitmap>(6)
+    private val clipFailedUris = HashSet<String>(6)
+    private val clipThumbSrcRect = Rect()
+    private val clipThumbDstRect = RectF()
+    private val clipThumbPaint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
+
+    // Preallocated zero-allocation 95ms keypress micro-animation ring buffer
+    private val animKeys = arrayOfNulls<KeyModel>(ANIM_BUFFER_SIZE)
+    private val animStartMs = LongArray(ANIM_BUFFER_SIZE)
+    private var animWriteIndex: Int = 0
+
+    // Enter long-press 2-option floating mini-popup state (0 = Emoji left, 1 = Newline right)
+    private var isEnterPopupActive: Boolean = false
+    private var enterPopupSlot: Int = -1
+    private var enterPopupSelectedOption: Int = 0
+    private var enterPopupCenterX: Float = 0f
+    private val enterPopupRect = RectF()
 
     // Preallocated multi-touch tracking arrays (zero allocations during typing)
     private val pointerIds = IntArray(MAX_POINTERS) { -1 }
@@ -161,6 +206,14 @@ class KeyboardCanvasView(context: Context) : View(context) {
             if (key.type == KeyModel.TYPE_ENTER) {
                 pointerLongPressConsumed[slot] = true
                 longPressSlot = -1
+                if (longPressEnterAction == KeyboardPrefs.ENTER_LONG_PRESS_POPUP &&
+                    layout.currentMode != KeyboardLayout.Mode.NUMPAD
+                ) {
+                    activateEnterPopup(key, slot)
+                    triggerHaptic()
+                    invalidate()
+                    return
+                }
                 releaseKeyVisual(key, slot)
                 pointerKeys[slot] = null
                 triggerHaptic()
@@ -172,7 +225,24 @@ class KeyboardCanvasView(context: Context) : View(context) {
                 return
             }
 
-            if (key.type == KeyModel.TYPE_SWITCH_LANG) {
+            if (key.type == KeyModel.TYPE_SPACE) {
+                if (!spaceGlideActive && layout.hasMultipleLanguages) {
+                    pointerLongPressConsumed[slot] = true
+                    longPressSlot = -1
+                    if (spaceSlot == slot) {
+                        spaceSlot = -1
+                        spaceGlideActive = false
+                    }
+                    releaseKeyVisual(key, slot)
+                    pointerKeys[slot] = null
+                    triggerHaptic()
+                    invalidate()
+                    actionListener?.onLanguageToggle()
+                }
+                return
+            }
+
+            if (key.type == KeyModel.TYPE_SWITCH_SYMBOLS || key.type == KeyModel.TYPE_SWITCH_LANG) {
                 pointerLongPressConsumed[slot] = true
                 longPressSlot = -1
                 releaseKeyVisual(key, slot)
@@ -205,6 +275,8 @@ class KeyboardCanvasView(context: Context) : View(context) {
     override fun onDetachedFromWindow() {
         super.onDetachedFromWindow()
         resetAllTouches()
+        clearKeyAnimations()
+        clearClipboardThumbnails()
         emojiPanel?.detach()
     }
 
@@ -251,8 +323,9 @@ class KeyboardCanvasView(context: Context) : View(context) {
         haptic: Boolean,
         languageSpec: LanguageSpec,
         multipleLanguages: Boolean,
-        longPressEnterAction: Int = KeyboardPrefs.ENTER_LONG_PRESS_EMOJI,
-        showEmojiKey: Boolean = true
+        longPressEnterAction: Int = KeyboardPrefs.ENTER_LONG_PRESS_POPUP,
+        showEmojiKey: Boolean = false,
+        keypressAnimation: Boolean = true
     ) {
         theme.applyTheme(context, themeMode, customCssEnabled, customCss)
         emojiPanel?.syncThemeColors()
@@ -260,6 +333,10 @@ class KeyboardCanvasView(context: Context) : View(context) {
         hapticEnabled = haptic
         longPressSymbolsEnabled = longPressSymbols
         this.longPressEnterAction = longPressEnterAction
+        keypressAnimationEnabled = keypressAnimation
+        if (!keypressAnimationEnabled) {
+            clearKeyAnimations()
+        }
         layout.setDisplayOptions(showNumberRow, showSubLabels, showEmojiKey)
         layout.setLanguage(languageSpec, multipleLanguages)
         requestLayout()
@@ -270,14 +347,77 @@ class KeyboardCanvasView(context: Context) : View(context) {
     }
 
     /**
-     * Releases lazy-loaded Emoji panel & font/glyph caches immediately when the keyboard hides,
+     * Releases lazy-loaded Emoji panel & clipboard micro-thumbnails immediately when the keyboard hides,
      * keeping background IME RAM minimal.
      */
     fun releaseTransientUiMemory() {
+        clearClipboardThumbnails()
+        clearKeyAnimations()
         if (!isEmojiMode) {
             emojiPanel?.detach()
             emojiPanel = null
         }
+    }
+
+    fun clearClipboardThumbnails() {
+        if (clipThumbnails.isNotEmpty()) {
+            for (bmp in clipThumbnails.values) {
+                if (!bmp.isRecycled) {
+                    bmp.recycle()
+                }
+            }
+            clipThumbnails.clear()
+        }
+        clipFailedUris.clear()
+    }
+
+    private fun activateEnterPopup(enterKey: KeyModel, slot: Int) {
+        val kb = enterKey.bounds
+        val cellW = maxOf(kb.width() * 0.80f, 44f * density)
+        val popW = cellW * 2f
+        val popH = maxOf(kb.height() * 0.96f, 44f * density)
+        val right = kb.right.coerceAtMost(width - 4f * density)
+        val left = (right - popW).coerceAtLeast(4f * density)
+        val bottom = kb.top - 8f * density
+        val top = (bottom - popH).coerceAtLeast(2f * density)
+
+        enterPopupRect.set(left, top, left + popW, top + popH)
+        enterPopupCenterX = left + popW * 0.5f
+        enterPopupSelectedOption = 0
+        enterPopupSlot = slot
+        isEnterPopupActive = true
+    }
+
+    private fun recordKeyReleaseAnim(key: KeyModel) {
+        if (!keypressAnimationEnabled) return
+        val t = key.type
+        if (t != KeyModel.TYPE_NORMAL &&
+            t != KeyModel.TYPE_SPACE &&
+            t != KeyModel.TYPE_DELETE &&
+            t != KeyModel.TYPE_ENTER
+        ) {
+            return
+        }
+        val now = SystemClock.uptimeMillis()
+        for (i in 0 until ANIM_BUFFER_SIZE) {
+            if (animKeys[i] === key) {
+                animStartMs[i] = now
+                postInvalidateOnAnimation()
+                return
+            }
+        }
+        animKeys[animWriteIndex] = key
+        animStartMs[animWriteIndex] = now
+        animWriteIndex = (animWriteIndex + 1) % ANIM_BUFFER_SIZE
+        postInvalidateOnAnimation()
+    }
+
+    private fun clearKeyAnimations() {
+        for (i in 0 until ANIM_BUFFER_SIZE) {
+            animKeys[i] = null
+            animStartMs[i] = 0L
+        }
+        animWriteIndex = 0
     }
 
     fun applyHeightOnly(heightDp: Int) {
@@ -393,11 +533,14 @@ class KeyboardCanvasView(context: Context) : View(context) {
             drawSuggestionStrip(canvas)
         }
 
-        // 3. Draw Keys with precision tactile lip & subtle hairline border
+        // 3. Draw Keys with precision tactile lip, hairline border & zero-alloc 95ms micro-animation
         val keys = layout.getActiveKeys()
         val radius = theme.keyCornerRadius
         val hasShadow = theme.keyShadowHeight > 0f && (theme.colorKeyShadow ushr 24) > 0
         val hasBorder = theme.keyBorderWidth > 0f && (theme.colorKeyBorder ushr 24) > 0
+        val animEnabled = keypressAnimationEnabled
+        val nowMs = if (animEnabled) SystemClock.uptimeMillis() else 0L
+        var needsNextFrame = false
 
         for (i in keys.indices) {
             val key = keys[i]
@@ -415,6 +558,37 @@ class KeyboardCanvasView(context: Context) : View(context) {
                 else -> theme.keyBgPaint
             }
 
+            // Zero-allocation 95ms ease-out release animation lookup
+            var releaseProgress = -1f
+            if (animEnabled && !key.isPressed) {
+                for (a in 0 until ANIM_BUFFER_SIZE) {
+                    if (animKeys[a] === key) {
+                        val elapsed = nowMs - animStartMs[a]
+                        if (elapsed in 0L until ANIM_DURATION_MS) {
+                            val rawT = elapsed.toFloat() / ANIM_DURATION_MS.toFloat()
+                            val inv = 1f - rawT
+                            releaseProgress = 1f - inv * inv
+                            needsNextFrame = true
+                        } else {
+                            animKeys[a] = null
+                            animStartMs[a] = 0L
+                        }
+                        break
+                    }
+                }
+            }
+
+            val scale = when {
+                animEnabled && key.isPressed -> 0.95f
+                releaseProgress >= 0f -> 0.95f + 0.05f * releaseProgress
+                else -> 1f
+            }
+            val applyScale = scale < 0.999f
+            if (applyScale) {
+                canvas.save()
+                canvas.scale(scale, scale, b.centerX(), b.centerY())
+            }
+
             // Bottom tactile shadow lip
             if (!key.isPressed && hasShadow) {
                 theme.reusableRectF.set(
@@ -428,6 +602,18 @@ class KeyboardCanvasView(context: Context) : View(context) {
 
             // Main keycap fill
             canvas.drawRoundRect(b, radius, radius, bgPaint)
+
+            // Smooth fading pressed highlight during release animation (zero-allocation)
+            if (releaseProgress >= 0f) {
+                val baseAlpha = theme.colorBgKeyPressed ushr 24
+                val fadeAlpha = ((1f - releaseProgress) * baseAlpha.toFloat()).toInt().coerceIn(0, 255)
+                if (fadeAlpha > 0) {
+                    val prevAlpha = theme.keyPressedPaint.alpha
+                    theme.keyPressedPaint.alpha = fadeAlpha
+                    canvas.drawRoundRect(b, radius, radius, theme.keyPressedPaint)
+                    theme.keyPressedPaint.alpha = prevAlpha
+                }
+            }
 
             // Crisp hairline border
             if (hasBorder) {
@@ -447,12 +633,24 @@ class KeyboardCanvasView(context: Context) : View(context) {
                     canvas.drawText(sub, subX, subY, subPaint)
                 }
             }
+
+            if (applyScale) {
+                canvas.restore()
+            }
         }
 
-        // 4. Draw Key Preview Popup above latest pressed normal key (zero-allocation)
-        val activeKey = activePopupKey
-        if (activeKey != null && activeKey.isPressed && activeKey.type == KeyModel.TYPE_NORMAL) {
-            drawKeyPreviewPopup(canvas, activeKey, radius)
+        // 4. Draw Enter Long-Press 2-Option Floating Mini-Popup OR Key Preview Popup (zero-allocation)
+        if (isEnterPopupActive) {
+            drawEnterPopup(canvas, hasShadow, hasBorder)
+        } else {
+            val activeKey = activePopupKey
+            if (activeKey != null && activeKey.isPressed && activeKey.type == KeyModel.TYPE_NORMAL) {
+                drawKeyPreviewPopup(canvas, activeKey, radius)
+            }
+        }
+
+        if (needsNextFrame) {
+            postInvalidateOnAnimation()
         }
     }
 
@@ -472,9 +670,10 @@ class KeyboardCanvasView(context: Context) : View(context) {
             KeyModel.TYPE_ENTER -> {
                 val paint = if (key.isPressed) theme.iconPaint else theme.iconOnAccentPaint
                 drawContextualEnterIcon(canvas, b, paint)
-                if (longPressEnterAction == KeyboardPrefs.ENTER_LONG_PRESS_EMOJI &&
+                val showEnterDot = (longPressEnterAction == KeyboardPrefs.ENTER_LONG_PRESS_EMOJI ||
+                    longPressEnterAction == KeyboardPrefs.ENTER_LONG_PRESS_POPUP) &&
                     layout.currentMode != KeyboardLayout.Mode.NUMPAD
-                ) {
+                if (showEnterDot) {
                     val dotPaint = if (key.isPressed) theme.iconFillPaint else theme.iconOnAccentFillPaint
                     val prevAlpha = dotPaint.alpha
                     dotPaint.alpha = 185
@@ -488,7 +687,8 @@ class KeyboardCanvasView(context: Context) : View(context) {
                 }
             }
             KeyModel.TYPE_EMOJI -> {
-                drawEmojiSmileyIcon(canvas, b)
+                val r = minOf(b.width(), b.height()) * 0.25f
+                drawEmojiSmileyIcon(canvas, b.centerX(), b.centerY(), r, theme.iconPaint, theme.iconFillPaint)
             }
             KeyModel.TYPE_SWITCH_LANG -> {
                 if (key.label == "⚙") {
@@ -589,6 +789,13 @@ class KeyboardCanvasView(context: Context) : View(context) {
         val cx = b.centerX()
         val cy = b.centerY()
         val s = minOf(b.width(), b.height()) * 0.27f
+
+        // Shift + Enter visual cue: always show Newline bent-arrow when Shift or CapsLock is active
+        if (layout.isShifted || layout.isCapsLock) {
+            drawNewlineIcon(canvas, cx, cy, s, paint)
+            return
+        }
+
         val action = currentImeAction and EditorInfo.IME_MASK_ACTION
         val path = theme.reusablePath
         path.reset()
@@ -635,36 +842,116 @@ class KeyboardCanvasView(context: Context) : View(context) {
                 canvas.drawPath(path, paint)
             }
             else -> {
-                // Crisp Return bent-arrow
-                path.moveTo(cx + s * 0.76f, cy - s * 0.52f)
-                path.lineTo(cx + s * 0.76f, cy + s * 0.18f)
-                path.lineTo(cx - s * 0.74f, cy + s * 0.18f)
-                canvas.drawPath(path, paint)
-
-                path.reset()
-                path.moveTo(cx - s * 0.28f, cy - s * 0.26f)
-                path.lineTo(cx - s * 0.78f, cy + s * 0.18f)
-                path.lineTo(cx - s * 0.28f, cy + s * 0.62f)
-                canvas.drawPath(path, paint)
+                drawNewlineIcon(canvas, cx, cy, s, paint)
             }
         }
     }
 
-    private fun drawEmojiSmileyIcon(canvas: Canvas, b: RectF) {
-        val cx = b.centerX()
-        val cy = b.centerY()
-        val r = minOf(b.width(), b.height()) * 0.25f
+    private fun drawNewlineIcon(canvas: Canvas, cx: Float, cy: Float, s: Float, paint: Paint) {
+        val path = theme.reusablePath
+        path.reset()
+        path.moveTo(cx + s * 0.76f, cy - s * 0.52f)
+        path.lineTo(cx + s * 0.76f, cy + s * 0.18f)
+        path.lineTo(cx - s * 0.74f, cy + s * 0.18f)
+        canvas.drawPath(path, paint)
 
-        canvas.drawCircle(cx, cy, r, theme.iconPaint)
+        path.reset()
+        path.moveTo(cx - s * 0.28f, cy - s * 0.26f)
+        path.lineTo(cx - s * 0.78f, cy + s * 0.18f)
+        path.lineTo(cx - s * 0.28f, cy + s * 0.62f)
+        canvas.drawPath(path, paint)
+    }
+
+    private fun drawEmojiSmileyIcon(
+        canvas: Canvas,
+        cx: Float,
+        cy: Float,
+        r: Float,
+        strokePaint: Paint,
+        fillPaint: Paint
+    ) {
+        canvas.drawCircle(cx, cy, r, strokePaint)
         val eyeOffsetX = r * 0.36f
         val eyeOffsetY = r * 0.24f
-        val eyeR = (r * 0.13f).coerceAtLeast(1.3f * density)
-        canvas.drawCircle(cx - eyeOffsetX, cy - eyeOffsetY, eyeR, theme.iconFillPaint)
-        canvas.drawCircle(cx + eyeOffsetX, cy - eyeOffsetY, eyeR, theme.iconFillPaint)
+        val eyeR = (r * 0.13f).coerceAtLeast(1.2f * density)
+        canvas.drawCircle(cx - eyeOffsetX, cy - eyeOffsetY, eyeR, fillPaint)
+        canvas.drawCircle(cx + eyeOffsetX, cy - eyeOffsetY, eyeR, fillPaint)
 
         val arcR = r * 0.54f
         theme.reusableRectF.set(cx - arcR, cy - arcR * 0.72f, cx + arcR, cy + arcR * 1.02f)
-        canvas.drawArc(theme.reusableRectF, 22f, 136f, false, theme.iconPaint)
+        canvas.drawArc(theme.reusableRectF, 22f, 136f, false, strokePaint)
+    }
+
+    private fun drawEnterPopup(canvas: Canvas, hasShadow: Boolean, hasBorder: Boolean) {
+        val pillRadius = 12f * density
+        if (hasShadow) {
+            theme.reusableRectF.set(
+                enterPopupRect.left,
+                enterPopupRect.top + 2f * density,
+                enterPopupRect.right,
+                enterPopupRect.bottom + 2f * density
+            )
+            canvas.drawRoundRect(theme.reusableRectF, pillRadius, pillRadius, theme.keyShadowPaint)
+        }
+
+        // Outer rounded pill container
+        canvas.drawRoundRect(enterPopupRect, pillRadius, pillRadius, theme.popupBgPaint)
+        if (hasBorder) {
+            canvas.drawRoundRect(enterPopupRect, pillRadius, pillRadius, theme.keyBorderPaint)
+        }
+
+        // Split into 2 equal cells: 0 = Emoji (left), 1 = Newline (right)
+        val inset = 3.5f * density
+        val innerRadius = (pillRadius - inset * 0.7f).coerceAtLeast(4f * density)
+        val midX = enterPopupCenterX
+
+        if (enterPopupSelectedOption == 0) {
+            theme.reusableRectF.set(
+                enterPopupRect.left + inset,
+                enterPopupRect.top + inset,
+                midX - inset * 0.5f,
+                enterPopupRect.bottom - inset
+            )
+        } else {
+            theme.reusableRectF.set(
+                midX + inset * 0.5f,
+                enterPopupRect.top + inset,
+                enterPopupRect.right - inset,
+                enterPopupRect.bottom - inset
+            )
+        }
+        canvas.drawRoundRect(theme.reusableRectF, innerRadius, innerRadius, theme.accentPaint)
+
+        val cellW = enterPopupRect.width() * 0.5f
+        val cellH = enterPopupRect.height()
+        val cy = enterPopupRect.centerY()
+
+        // Left cell: Emoji smiley icon
+        val leftCx = enterPopupRect.left + cellW * 0.5f
+        val emojiR = minOf(cellW, cellH) * 0.23f
+        val leftStroke = if (enterPopupSelectedOption == 0) theme.iconOnAccentPaint else theme.iconPaint
+        val leftFill = if (enterPopupSelectedOption == 0) theme.iconOnAccentFillPaint else theme.iconFillPaint
+        drawEmojiSmileyIcon(canvas, leftCx, cy, emojiR, leftStroke, leftFill)
+
+        // Right cell: Newline bent-arrow icon
+        val rightCx = midX + cellW * 0.5f
+        val newlineS = minOf(cellW, cellH) * 0.24f
+        val rightStroke = if (enterPopupSelectedOption == 1) theme.iconOnAccentPaint else theme.iconPaint
+        drawNewlineIcon(canvas, rightCx, cy, newlineS, rightStroke)
+    }
+
+    private fun drawImagePlaceholderIcon(canvas: Canvas, cx: Float, cy: Float, r: Float, paint: Paint) {
+        theme.reusableRectF.set(cx - r * 0.9f, cy - r * 0.72f, cx + r * 0.9f, cy + r * 0.72f)
+        canvas.drawRoundRect(theme.reusableRectF, 2f * density, 2f * density, paint)
+        canvas.drawCircle(cx - r * 0.35f, cy - r * 0.25f, r * 0.18f, paint)
+        val path = theme.reusablePath
+        path.reset()
+        path.moveTo(cx - r * 0.75f, cy + r * 0.55f)
+        path.lineTo(cx - r * 0.15f, cy + r * 0.02f)
+        path.lineTo(cx + r * 0.20f, cy + r * 0.32f)
+        path.lineTo(cx + r * 0.48f, cy + r * 0.08f)
+        path.lineTo(cx + r * 0.78f, cy + r * 0.55f)
+        canvas.drawPath(path, paint)
     }
 
     private fun drawGearIcon(canvas: Canvas, cx: Float, cy: Float, r: Float, paint: Paint) {
@@ -744,25 +1031,86 @@ class KeyboardCanvasView(context: Context) : View(context) {
         val sm = suggestionManager ?: return
         val count = sm.activeSlotCount
         if (count <= 0) {
-            // Idle minimal utility strip: Clipboard icon (left if clips exist), Language name (center), Settings gear (right)
-            val clips = clipboardManager?.getClips()
-            val hasClips = clips != null && clips.isNotEmpty()
-            if (hasClips) {
-                if (pressedStripAction == STRIP_ACTION_CLIPBOARD) {
-                    canvas.drawRect(0f, 0f, stripSideBtnWidthPx, h - density, theme.keyPressedPaint)
-                }
-                drawClipboardIcon(canvas, stripSideBtnWidthPx * 0.5f, h * 0.5f, 9f * density, theme.iconSecondaryPaint)
+            // Idle utility bar:
+            // [0..44dp] Clipboard | [44..88dp] Monochrome Emoji | Center: Language name | [w-92..w-44dp] EN/VI pill (multi-lang) | [w-44..w] Settings Gear
+            val btnW = stripSideBtnWidthPx
+            val cy = h * 0.5f
+            val hasBorder = theme.keyBorderWidth > 0f && (theme.colorKeyBorder ushr 24) > 0
+
+            // 1. Far-left slot (0..44dp): Clipboard icon
+            if (pressedStripAction == STRIP_ACTION_CLIPBOARD) {
+                canvas.drawRect(0f, 0f, btnW, h - density, theme.keyPressedPaint)
+            }
+            drawClipboardIcon(canvas, btnW * 0.5f, cy, 8.5f * density, theme.iconSecondaryPaint)
+            if (clipboardManager?.getClipItems()?.isNotEmpty() == true) {
+                canvas.drawCircle(btnW * 0.5f + 7.5f * density, cy - 7.5f * density, 2.2f * density, theme.accentPaint)
             }
 
-            // Center active language indicator
-            val baseline = h * 0.5f - (theme.textSecondaryPaint.descent() + theme.textSecondaryPaint.ascent()) * 0.5f
-            canvas.drawText(layout.activeLanguage.nativeName, w * 0.5f, baseline, theme.textSecondaryPaint)
+            // 2. Second-left slot (44..88dp): Monochrome Emoji vector smiley
+            if (pressedStripAction == STRIP_ACTION_EMOJI) {
+                canvas.drawRect(btnW, 0f, btnW * 2f, h - density, theme.keyPressedPaint)
+            }
+            val prevFillColor = theme.iconFillPaint.color
+            theme.iconFillPaint.color = theme.colorTextSecondary
+            drawEmojiSmileyIcon(canvas, btnW * 1.5f, cy, 8.5f * density, theme.iconSecondaryPaint, theme.iconFillPaint)
+            theme.iconFillPaint.color = prevFillColor
 
-            // Right Settings gear button
+            // 3. Far-right slot (w-44dp..w): Settings gear
             if (pressedStripAction == STRIP_ACTION_SETTINGS) {
-                canvas.drawRect(w - stripSideBtnWidthPx, 0f, w, h - density, theme.keyPressedPaint)
+                canvas.drawRect(w - btnW, 0f, w, h - density, theme.keyPressedPaint)
             }
-            drawGearIcon(canvas, w - stripSideBtnWidthPx * 0.5f, h * 0.5f, 8.5f * density, theme.iconSecondaryPaint)
+            drawGearIcon(canvas, w - btnW * 0.5f, cy, 8.5f * density, theme.iconSecondaryPaint)
+
+            // 4. Second-right slot (w-92dp..w-44dp): Compact EN/VI/KO language pill (only when multiple languages enabled)
+            val rightReserved = if (layout.hasMultipleLanguages) btnW + stripLangBtnWidthPx else btnW
+            if (layout.hasMultipleLanguages) {
+                val pillSlotLeft = w - rightReserved
+                val pillSlotRight = w - btnW
+                val pillCx = (pillSlotLeft + pillSlotRight) * 0.5f
+                val pillW = 34f * density
+                val pillH = 22f * density
+                val pillR = pillH * 0.5f
+                theme.reusableRectF.set(pillCx - pillW * 0.5f, cy - pillH * 0.5f, pillCx + pillW * 0.5f, cy + pillH * 0.5f)
+                val pillBgPaint = if (pressedStripAction == STRIP_ACTION_LANG_PILL) theme.keyPressedPaint else theme.keySpecialPaint
+                canvas.drawRoundRect(theme.reusableRectF, pillR, pillR, pillBgPaint)
+                if (hasBorder) {
+                    canvas.drawRoundRect(theme.reusableRectF, pillR, pillR, theme.keyBorderPaint)
+                }
+                val codePaint = theme.textSecondaryPaint
+                val prevCodeBold = codePaint.isFakeBoldText
+                codePaint.isFakeBoldText = true
+                val codeBase = cy - (codePaint.descent() + codePaint.ascent()) * 0.5f
+                canvas.drawText(layout.activeLanguage.shortCode, pillCx, codeBase, codePaint)
+                codePaint.isFakeBoldText = prevCodeBold
+            }
+
+            // 5. Center: Active language name (tappable to cycle when multiple languages enabled)
+            val centerLeft = btnW * 2f
+            val centerRight = w - rightReserved
+            if (centerRight > centerLeft + 24f * density) {
+                if (pressedStripAction == STRIP_ACTION_LANG_CENTER && layout.hasMultipleLanguages) {
+                    canvas.drawRect(centerLeft, 0f, centerRight, h - density, theme.keyPressedPaint)
+                }
+                val centerCx = (centerLeft + centerRight) * 0.5f
+                val availW = (centerRight - centerLeft - 10f * density).coerceAtLeast(16f * density)
+                val langName = layout.activeLanguage.nativeName
+                val paint = theme.textSecondaryPaint
+                val baseline = cy - (paint.descent() + paint.ascent()) * 0.5f
+                val measured = paint.measureText(langName)
+                if (measured <= availW) {
+                    canvas.drawText(langName, centerCx, baseline, paint)
+                } else {
+                    val ellipsisW = paint.measureText(ELLIPSIS)
+                    val fitCount = paint.breakText(langName, 0, langName.length, true, (availW - ellipsisW).coerceAtLeast(4f), null)
+                    val fitW = paint.measureText(langName, 0, fitCount)
+                    val startX = centerCx - (fitW + ellipsisW) * 0.5f
+                    val prevAlign = paint.textAlign
+                    paint.textAlign = Paint.Align.LEFT
+                    canvas.drawText(langName, 0, fitCount, startX, baseline, paint)
+                    canvas.drawText(ELLIPSIS, startX + fitW, baseline, paint)
+                    paint.textAlign = prevAlign
+                }
+            }
             return
         }
 
@@ -806,7 +1154,88 @@ class KeyboardCanvasView(context: Context) : View(context) {
         }
     }
 
-    // --- INLINE CANVAS CLIPBOARD PICKER OVERLAY (ZERO EXTRA VIEWS, ZERO ALLOCATIONS) ---
+    // --- INLINE CANVAS CLIPBOARD PICKER OVERLAY (ZERO EXTRA VIEWS, LAZY MICRO-THUMBNAILS) ---
+
+    private fun getOrDecodeClipThumbnail(uriString: String): Bitmap? {
+        val cached = clipThumbnails[uriString]
+        if (cached != null && !cached.isRecycled) return cached
+        if (uriString in clipFailedUris) return null
+
+        // Enforce strict max-5 thumbnail cap (~28 KB each in RGB_565)
+        if (clipThumbnails.size >= MAX_CLIP_THUMBNAILS) {
+            val iter = clipThumbnails.entries.iterator()
+            if (iter.hasNext()) {
+                val oldest = iter.next()
+                if (!oldest.value.isRecycled) {
+                    oldest.value.recycle()
+                }
+                iter.remove()
+            }
+        }
+
+        return try {
+            val uri = Uri.parse(uriString)
+            val boundsOpts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            context.contentResolver.openInputStream(uri)?.use { stream ->
+                BitmapFactory.decodeStream(stream, null, boundsOpts)
+            }
+            val srcW = boundsOpts.outWidth
+            val srcH = boundsOpts.outHeight
+            if (srcW <= 0 || srcH <= 0) {
+                clipFailedUris.add(uriString)
+                return null
+            }
+
+            var sampleSize = 1
+            while ((srcW / (sampleSize * 2)) >= CLIP_THUMB_TARGET_PX &&
+                (srcH / (sampleSize * 2)) >= CLIP_THUMB_TARGET_PX
+            ) {
+                sampleSize *= 2
+            }
+
+            val decodeOpts = BitmapFactory.Options().apply {
+                inSampleSize = sampleSize
+                inPreferredConfig = Bitmap.Config.RGB_565
+            }
+            val decoded = context.contentResolver.openInputStream(uri)?.use { stream ->
+                BitmapFactory.decodeStream(stream, null, decodeOpts)
+            }
+            if (decoded == null) {
+                clipFailedUris.add(uriString)
+                return null
+            }
+
+            val finalBmp = if (decoded.width > 140 || decoded.height > 140) {
+                val scale = CLIP_THUMB_TARGET_PX.toFloat() / maxOf(decoded.width, decoded.height).toFloat()
+                val dstW = (decoded.width * scale).toInt().coerceAtLeast(1)
+                val dstH = (decoded.height * scale).toInt().coerceAtLeast(1)
+                val scaled = Bitmap.createScaledBitmap(decoded, dstW, dstH, true)
+                if (scaled !== decoded) {
+                    decoded.recycle()
+                }
+                scaled
+            } else {
+                decoded
+            }
+
+            clipThumbnails[uriString] = finalBmp
+            finalBmp
+        } catch (_: Throwable) {
+            clipFailedUris.add(uriString)
+            null
+        }
+    }
+
+    private fun imageMimeSubtitle(mimeType: String?): String {
+        return when {
+            mimeType == null -> CLIP_IMAGE_SUB
+            mimeType.contains("png", ignoreCase = true) -> CLIP_IMAGE_PNG
+            mimeType.contains("jpeg", ignoreCase = true) || mimeType.contains("jpg", ignoreCase = true) -> CLIP_IMAGE_JPEG
+            mimeType.contains("webp", ignoreCase = true) -> CLIP_IMAGE_WEBP
+            mimeType.contains("gif", ignoreCase = true) -> CLIP_IMAGE_GIF
+            else -> CLIP_IMAGE_SUB
+        }
+    }
 
     private fun drawClipboardOverlay(canvas: Canvas) {
         val w = width.toFloat()
@@ -834,7 +1263,7 @@ class KeyboardCanvasView(context: Context) : View(context) {
         }
         canvas.drawText(CLIP_CLEAR, w - btnW * 0.5f, hdrBaseline, theme.textSpacePaint)
 
-        val clips = clipboardManager?.getClips()
+        val clips = clipboardManager?.getClipItems()
         if (clips == null || clips.isEmpty()) {
             val emptyY = (headerH + h) * 0.5f - (theme.textSpacePaint.descent() + theme.textSpacePaint.ascent()) * 0.5f
             canvas.drawText(CLIP_EMPTY, w * 0.5f, emptyY, theme.textSpacePaint)
@@ -842,7 +1271,7 @@ class KeyboardCanvasView(context: Context) : View(context) {
             return
         }
 
-        val itemH = 44f * density
+        val itemH = 52f * density
         val itemGap = 6f * density
         val padH = 10f * density
         val stride = itemH + itemGap
@@ -858,6 +1287,9 @@ class KeyboardCanvasView(context: Context) : View(context) {
         val textPad = 12f * density
         val maxTextW = (w - padH * 2f - textPad * 2f).coerceAtLeast(24f * density)
         val ellipsisW = theme.clipTextPaint.measureText(ELLIPSIS)
+        val thumbSize = 40f * density
+        val thumbPad = 6f * density
+        val thumbRadius = 6f * density
 
         for (i in clips.indices) {
             val top = headerH + itemGap + i * stride - clipScrollY
@@ -871,7 +1303,58 @@ class KeyboardCanvasView(context: Context) : View(context) {
                 canvas.drawRoundRect(theme.reusableRectF, radius, radius, theme.keyBorderPaint)
             }
 
-            val clip = clips[i]
+            val item = clips[i]
+            if (item.isImage) {
+                val thumbLeft = theme.reusableRectF.left + thumbPad
+                val thumbTop = theme.reusableRectF.top + (itemH - thumbSize) * 0.5f
+                clipThumbDstRect.set(thumbLeft, thumbTop, thumbLeft + thumbSize, thumbTop + thumbSize)
+
+                val uriStr = item.imageUri
+                val bmp = if (!uriStr.isNullOrEmpty()) getOrDecodeClipThumbnail(uriStr) else null
+                if (bmp != null && !bmp.isRecycled) {
+                    val bw = bmp.width
+                    val bh = bmp.height
+                    val side = minOf(bw, bh)
+                    val sx = (bw - side) / 2
+                    val sy = (bh - side) / 2
+                    clipThumbSrcRect.set(sx, sy, sx + side, sy + side)
+
+                    theme.reusablePath.reset()
+                    theme.reusablePath.addRoundRect(clipThumbDstRect, thumbRadius, thumbRadius, Path.Direction.CW)
+                    canvas.save()
+                    canvas.clipPath(theme.reusablePath)
+                    canvas.drawBitmap(bmp, clipThumbSrcRect, clipThumbDstRect, clipThumbPaint)
+                    canvas.restore()
+                    if (hasBorder) {
+                        canvas.drawRoundRect(clipThumbDstRect, thumbRadius, thumbRadius, theme.keyBorderPaint)
+                    }
+                } else {
+                    canvas.drawRoundRect(clipThumbDstRect, thumbRadius, thumbRadius, theme.keySpecialPaint)
+                    drawImagePlaceholderIcon(
+                        canvas,
+                        clipThumbDstRect.centerX(),
+                        clipThumbDstRect.centerY(),
+                        thumbSize * 0.28f,
+                        theme.iconSecondaryPaint
+                    )
+                }
+
+                val labelX = clipThumbDstRect.right + 12f * density
+                val titleY = theme.reusableRectF.top + itemH * 0.41f -
+                    (theme.clipTextPaint.descent() + theme.clipTextPaint.ascent()) * 0.5f
+                canvas.drawText(CLIP_IMAGE_LABEL, labelX, titleY, theme.clipTextPaint)
+
+                val subPaint = theme.textSecondaryPaint
+                val prevAlign = subPaint.textAlign
+                subPaint.textAlign = Paint.Align.LEFT
+                val subY = theme.reusableRectF.top + itemH * 0.70f -
+                    (subPaint.descent() + subPaint.ascent()) * 0.5f
+                canvas.drawText(imageMimeSubtitle(item.mimeType), labelX, subY, subPaint)
+                subPaint.textAlign = prevAlign
+                continue
+            }
+
+            val clip = item.text ?: ""
             // Clamp to first line cleanly without allocating new Strings
             var lineEnd = clip.indexOf('\n')
             val hasMoreLines = lineEnd >= 0
@@ -960,12 +1443,22 @@ class KeyboardCanvasView(context: Context) : View(context) {
                     clipboardManager?.clear()
                     closeClipboardOverlay()
                 } else if (!clipDragging && clipPressedIndex >= 0) {
-                    val clips = clipboardManager?.getClips()
+                    val clips = clipboardManager?.getClipItems()
                     if (clips != null && clipPressedIndex in clips.indices) {
                         val selected = clips[clipPressedIndex]
                         triggerHaptic()
                         closeClipboardOverlay()
-                        actionListener?.onClipSelected(selected)
+                        if (selected.isImage) {
+                            val uriStr = selected.imageUri
+                            if (!uriStr.isNullOrEmpty()) {
+                                actionListener?.onImageClipSelected(uriStr, selected.mimeType ?: "image/*")
+                            }
+                        } else {
+                            val text = selected.text
+                            if (!text.isNullOrEmpty()) {
+                                actionListener?.onClipSelected(text)
+                            }
+                        }
                     } else {
                         closeClipboardOverlay()
                     }
@@ -989,9 +1482,9 @@ class KeyboardCanvasView(context: Context) : View(context) {
     }
 
     private fun findClipIndexAt(y: Float, headerH: Float): Int {
-        val clips = clipboardManager?.getClips() ?: return -1
+        val clips = clipboardManager?.getClipItems() ?: return -1
         if (clips.isEmpty()) return -1
-        val itemH = 44f * density
+        val itemH = 52f * density
         val itemGap = 6f * density
         val stride = itemH + itemGap
         val relY = y - headerH - itemGap + clipScrollY
@@ -1003,6 +1496,7 @@ class KeyboardCanvasView(context: Context) : View(context) {
 
     private fun openClipboardOverlay() {
         resetAllTouches()
+        clearKeyAnimations()
         isClipboardOpen = true
         clipScrollY = 0f
         clipPressedIndex = -1
@@ -1012,6 +1506,7 @@ class KeyboardCanvasView(context: Context) : View(context) {
 
     private fun closeClipboardOverlay() {
         isClipboardOpen = false
+        clearClipboardThumbnails()
         clipPressedIndex = -1
         clipHeaderBtnPressed = 0
         invalidate()
@@ -1190,6 +1685,11 @@ class KeyboardCanvasView(context: Context) : View(context) {
                 spaceSlot = slot
                 spaceGlideActive = false
                 spaceLastStepX = px
+                if (layout.hasMultipleLanguages) {
+                    mainHandler.removeCallbacks(longPressRunnable)
+                    longPressSlot = slot
+                    mainHandler.postDelayed(longPressRunnable, 360L)
+                }
             }
 
             KeyModel.TYPE_SHIFT -> {
@@ -1207,10 +1707,16 @@ class KeyboardCanvasView(context: Context) : View(context) {
                 if (longPressEnterAction != KeyboardPrefs.ENTER_LONG_PRESS_NONE) {
                     mainHandler.removeCallbacks(longPressRunnable)
                     longPressSlot = slot
-                    mainHandler.postDelayed(longPressRunnable, 360L)
+                    val delayMs = if (longPressEnterAction == KeyboardPrefs.ENTER_LONG_PRESS_POPUP) {
+                        ENTER_POPUP_LONG_PRESS_MS
+                    } else {
+                        360L
+                    }
+                    mainHandler.postDelayed(longPressRunnable, delayMs)
                 }
             }
 
+            KeyModel.TYPE_SWITCH_SYMBOLS,
             KeyModel.TYPE_SWITCH_LANG -> {
                 mainHandler.removeCallbacks(longPressRunnable)
                 longPressSlot = slot
@@ -1245,11 +1751,26 @@ class KeyboardCanvasView(context: Context) : View(context) {
             val px = event.getX(i)
             val py = event.getY(i)
 
-            // 1. Spacebar Horizontal Cursor Glide
+            // 0. Enter Long-Press 2-Option Floating Mini-Popup horizontal selector
+            if (isEnterPopupActive && slot == enterPopupSlot) {
+                val nextOption = if (px < enterPopupCenterX) 0 else 1
+                if (nextOption != enterPopupSelectedOption) {
+                    enterPopupSelectedOption = nextOption
+                    triggerHaptic()
+                    needsInvalidate = true
+                }
+                continue
+            }
+
+            // 1. Spacebar Horizontal Cursor Glide (cancels Space long-press immediately on drag)
             if (slot == spaceSlot && key.type == KeyModel.TYPE_SPACE) {
                 if (!spaceGlideActive && abs(px - pointerDownX[slot]) > touchSlop) {
                     spaceGlideActive = true
                     spaceLastStepX = px
+                    if (longPressSlot == slot) {
+                        mainHandler.removeCallbacks(longPressRunnable)
+                        longPressSlot = -1
+                    }
                     needsInvalidate = true
                 }
                 if (spaceGlideActive) {
@@ -1339,6 +1860,13 @@ class KeyboardCanvasView(context: Context) : View(context) {
             spaceGlideActive = false
         }
 
+        val wasEnterPopup = (isEnterPopupActive && enterPopupSlot == slot)
+        val chosenEnterOption = enterPopupSelectedOption
+        if (wasEnterPopup) {
+            isEnterPopupActive = false
+            enterPopupSlot = -1
+        }
+
         val wasShiftHold = (shiftHoldSlot == slot)
         if (wasShiftHold) {
             shiftHoldSlot = -1
@@ -1346,11 +1874,24 @@ class KeyboardCanvasView(context: Context) : View(context) {
 
         if (key != null) {
             if (!isKeyHeldByAnySlot(key)) {
+                val wasPressed = key.isPressed
                 key.isPressed = false
+                if (wasPressed) {
+                    recordKeyReleaseAnim(key)
+                }
             }
             if (activePopupKey === key) {
                 activePopupKey = findLatestPressedNormalKey()
                 popupLongPressTriggered = false
+            }
+
+            if (wasEnterPopup) {
+                if (chosenEnterOption == 0) {
+                    setEmojiMode(true)
+                } else {
+                    actionListener?.onInsertNewline()
+                }
+                return
             }
 
             if (!wasLongConsumed && !wasSpaceGlide) {
@@ -1404,10 +1945,16 @@ class KeyboardCanvasView(context: Context) : View(context) {
 
         pressedSuggestionIndex = -1
         if (y < currentStripHeight && width > 0) {
-            val hasClips = clipboardManager?.getClips()?.isNotEmpty() == true
+            val btnW = stripSideBtnWidthPx
+            val w = width.toFloat()
+            val multiLang = layout.hasMultipleLanguages
+            val rightReserved = if (multiLang) btnW + stripLangBtnWidthPx else btnW
             pressedStripAction = when {
-                hasClips && x <= stripSideBtnWidthPx -> STRIP_ACTION_CLIPBOARD
-                x >= width - stripSideBtnWidthPx -> STRIP_ACTION_SETTINGS
+                x < btnW -> STRIP_ACTION_CLIPBOARD
+                x < btnW * 2f -> STRIP_ACTION_EMOJI
+                x >= w - btnW -> STRIP_ACTION_SETTINGS
+                multiLang && x >= w - rightReserved -> STRIP_ACTION_LANG_PILL
+                multiLang && x >= btnW * 2f && x < w - rightReserved -> STRIP_ACTION_LANG_CENTER
                 else -> STRIP_ACTION_NONE
             }
         } else {
@@ -1436,6 +1983,17 @@ class KeyboardCanvasView(context: Context) : View(context) {
             STRIP_ACTION_CLIPBOARD -> {
                 triggerHaptic()
                 openClipboardOverlay()
+            }
+            STRIP_ACTION_EMOJI -> {
+                triggerHaptic()
+                setEmojiMode(true)
+            }
+            STRIP_ACTION_LANG_PILL,
+            STRIP_ACTION_LANG_CENTER -> {
+                if (layout.hasMultipleLanguages) {
+                    triggerHaptic()
+                    actionListener?.onLanguageToggle()
+                }
             }
             STRIP_ACTION_SETTINGS -> {
                 triggerHaptic()
@@ -1480,7 +2038,11 @@ class KeyboardCanvasView(context: Context) : View(context) {
                 return
             }
         }
+        val wasPressed = key.isPressed
         key.isPressed = false
+        if (wasPressed) {
+            recordKeyReleaseAnim(key)
+        }
     }
 
     private fun findLatestPressedNormalKey(): KeyModel? {
@@ -1504,10 +2066,12 @@ class KeyboardCanvasView(context: Context) : View(context) {
                 hadAny = true
             }
         }
-        if (hadAny) {
+        if (hadAny || isEnterPopupActive) {
             cancelTimers()
             activePopupKey = null
             popupLongPressTriggered = false
+            isEnterPopupActive = false
+            enterPopupSlot = -1
             deleteSlot = -1
             deleteSwipeTriggered = false
             spaceSlot = -1
@@ -1527,6 +2091,8 @@ class KeyboardCanvasView(context: Context) : View(context) {
         }
         activePopupKey = null
         popupLongPressTriggered = false
+        isEnterPopupActive = false
+        enterPopupSlot = -1
         pressedSuggestionIndex = -1
         pressedStripAction = STRIP_ACTION_NONE
         stripPointerId = -1
@@ -1591,18 +2157,21 @@ class KeyboardCanvasView(context: Context) : View(context) {
 
             KeyModel.TYPE_SWITCH_SYMBOLS -> {
                 resetAllTouches()
+                clearKeyAnimations()
                 layout.currentMode = KeyboardLayout.Mode.SYMBOLS
                 invalidate()
             }
 
             KeyModel.TYPE_SWITCH_ALPHA -> {
                 resetAllTouches()
+                clearKeyAnimations()
                 layout.currentMode = KeyboardLayout.Mode.ALPHA
                 invalidate()
             }
 
             KeyModel.TYPE_SWITCH_NUMPAD -> {
                 resetAllTouches()
+                clearKeyAnimations()
                 layout.currentMode = KeyboardLayout.Mode.NUMPAD
                 requestLayout()
                 invalidate()
@@ -1624,7 +2193,11 @@ class KeyboardCanvasView(context: Context) : View(context) {
 
     fun setEmojiMode(enabled: Boolean) {
         resetAllTouches()
-        isClipboardOpen = false
+        clearKeyAnimations()
+        if (isClipboardOpen) {
+            isClipboardOpen = false
+            clearClipboardThumbnails()
+        }
         isEmojiMode = enabled
         if (enabled) {
             getOrCreateEmojiPanel()
@@ -1635,7 +2208,11 @@ class KeyboardCanvasView(context: Context) : View(context) {
 
     fun switchToNumpad() {
         resetAllTouches()
-        isClipboardOpen = false
+        clearKeyAnimations()
+        if (isClipboardOpen) {
+            isClipboardOpen = false
+            clearClipboardThumbnails()
+        }
         layout.currentMode = KeyboardLayout.Mode.NUMPAD
         isEmojiMode = false
         requestLayout()
@@ -1644,7 +2221,11 @@ class KeyboardCanvasView(context: Context) : View(context) {
 
     fun switchToAlpha() {
         resetAllTouches()
-        isClipboardOpen = false
+        clearKeyAnimations()
+        if (isClipboardOpen) {
+            isClipboardOpen = false
+            clearClipboardThumbnails()
+        }
         layout.currentMode = KeyboardLayout.Mode.ALPHA
         isEmojiMode = false
         requestLayout()

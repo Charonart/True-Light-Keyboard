@@ -24,7 +24,7 @@ class KeyboardLayout(private val theme: KeyboardTheme) {
     var isCapsLock = false
     var showNumberRow = false
     var showSubLabels = true
-    var showEmojiKey = true
+    var showEmojiKey = false
 
     var activeLanguage: LanguageSpec = LanguageRegistry.EN_US
         private set
@@ -71,7 +71,7 @@ class KeyboardLayout(private val theme: KeyboardTheme) {
     fun setDisplayOptions(
         numberRow: Boolean,
         subLabels: Boolean,
-        emojiKey: Boolean = true
+        emojiKey: Boolean = false
     ) {
         val numberRowChanged = (this.showNumberRow != numberRow)
         val emojiKeyChanged = (this.showEmojiKey != emojiKey)
@@ -90,6 +90,14 @@ class KeyboardLayout(private val theme: KeyboardTheme) {
             if (lastWidth > 0 && lastKeyAreaHeight > 0f) {
                 measure(lastWidth, lastTopOffset, lastKeyAreaHeight)
             }
+        }
+    }
+
+    private fun buildSpaceLabel(): String {
+        return if (hasMultipleLanguages) {
+            "${activeLanguage.spaceLabel} · ${activeLanguage.shortCode}"
+        } else {
+            activeLanguage.spaceLabel
         }
     }
 
@@ -150,15 +158,14 @@ class KeyboardLayout(private val theme: KeyboardTheme) {
         }
         alphaKeys.add(KeyModel(code = KeyModel.CODE_DELETE, label = "⌫", type = KeyModel.TYPE_DELETE))
 
-        // Row 3 (6 or 7 balanced keys): ?123, [optional Emoji], Lang/Settings, Comma, Space, Period, Enter
+        // Row 3 (5 clean symmetrical keys by default, or 6 with optional Emoji key):
+        // ?123, [optional Emoji], Comma, Space, Period, Enter
         alphaKeys.add(KeyModel(code = KeyModel.CODE_SWITCH_SYMBOLS, label = "?123", type = KeyModel.TYPE_SWITCH_SYMBOLS))
         if (showEmojiKey) {
             alphaKeys.add(KeyModel(code = KeyModel.CODE_EMOJI, label = "", type = KeyModel.TYPE_EMOJI))
         }
-        val langLabel = if (hasMultipleLanguages) activeLanguage.shortCode else "⚙"
-        alphaKeys.add(KeyModel(code = KeyModel.CODE_SWITCH_LANG, label = langLabel, type = KeyModel.TYPE_SWITCH_LANG))
         alphaKeys.add(KeyModel(code = ','.code, label = ",", subLabel = "!", type = KeyModel.TYPE_NORMAL))
-        alphaKeys.add(KeyModel(code = KeyModel.CODE_SPACE, label = activeLanguage.spaceLabel, type = KeyModel.TYPE_SPACE))
+        alphaKeys.add(KeyModel(code = KeyModel.CODE_SPACE, label = buildSpaceLabel(), type = KeyModel.TYPE_SPACE))
         alphaKeys.add(KeyModel(code = '.'.code, label = ".", subLabel = "?", type = KeyModel.TYPE_NORMAL))
         alphaKeys.add(KeyModel(code = KeyModel.CODE_ENTER, label = "↵", type = KeyModel.TYPE_ENTER))
     }
@@ -181,7 +188,7 @@ class KeyboardLayout(private val theme: KeyboardTheme) {
             symbolKeys.add(KeyModel(code = KeyModel.CODE_EMOJI, label = "", type = KeyModel.TYPE_EMOJI))
         }
         symbolKeys.add(KeyModel(code = ','.code, label = ",", type = KeyModel.TYPE_NORMAL))
-        symbolKeys.add(KeyModel(code = KeyModel.CODE_SPACE, label = activeLanguage.spaceLabel, type = KeyModel.TYPE_SPACE))
+        symbolKeys.add(KeyModel(code = KeyModel.CODE_SPACE, label = buildSpaceLabel(), type = KeyModel.TYPE_SPACE))
         symbolKeys.add(KeyModel(code = '.'.code, label = ".", type = KeyModel.TYPE_NORMAL))
         symbolKeys.add(KeyModel(code = KeyModel.CODE_ENTER, label = "↵", type = KeyModel.TYPE_ENTER))
     }
@@ -204,7 +211,7 @@ class KeyboardLayout(private val theme: KeyboardTheme) {
             symbolShiftKeys.add(KeyModel(code = KeyModel.CODE_EMOJI, label = "", type = KeyModel.TYPE_EMOJI))
         }
         symbolShiftKeys.add(KeyModel(code = '<'.code, label = "<", type = KeyModel.TYPE_NORMAL))
-        symbolShiftKeys.add(KeyModel(code = KeyModel.CODE_SPACE, label = activeLanguage.spaceLabel, type = KeyModel.TYPE_SPACE))
+        symbolShiftKeys.add(KeyModel(code = KeyModel.CODE_SPACE, label = buildSpaceLabel(), type = KeyModel.TYPE_SPACE))
         symbolShiftKeys.add(KeyModel(code = '>'.code, label = ">", type = KeyModel.TYPE_NORMAL))
         symbolShiftKeys.add(KeyModel(code = KeyModel.CODE_ENTER, label = "↵", type = KeyModel.TYPE_ENTER))
     }
@@ -314,27 +321,25 @@ class KeyboardLayout(private val theme: KeyboardTheme) {
         alphaKeys[idx++].bounds.set(x, y, x + specialW, y + rowHeight - mv * 2) // Del
         curRow++
 
-        // Row 3: ?123, [optional Emoji], Lang/Settings, ',', Space (expanded when Emoji hidden), '.', Enter
+        // Row 3: ?123 (1.35x), [optional Emoji 0.9x], ',' (0.9x), Space (~4.9x / ~4.0x), '.' (0.9x), Enter (1.45x)
         y = topOffset + curRow * rowHeight + mv
-        val sideKeyW = kw10 * 1.2f
-        val smallKeyW = kw10 * 0.85f
-        val punctW = kw10 * 0.75f
-        val enterW = kw10 * 1.35f
-        val row3KeyCount = if (showEmojiKey) 7 else 6
-        val emojiSlotW = if (showEmojiKey) smallKeyW else 0f
+        val sideKeyW = kw10 * 1.35f
+        val emojiKeyW = kw10 * 0.9f
+        val punctW = kw10 * 0.9f
+        val enterW = kw10 * 1.45f
+        val row3KeyCount = if (showEmojiKey) 6 else 5
+        val emojiSlotW = if (showEmojiKey) emojiKeyW else 0f
         val spaceW = (
-            width - (sideKeyW + emojiSlotW + smallKeyW + punctW * 2f + enterW + mh * (row3KeyCount * 2f))
+            width - (sideKeyW + emojiSlotW + punctW * 2f + enterW + mh * (row3KeyCount * 2f))
         ).coerceAtLeast(kw10 * 2f)
 
         x = mh
         alphaKeys[idx++].bounds.set(x, y, x + sideKeyW, y + rowHeight - mv * 2) // ?123
         x += sideKeyW + mh * 2
         if (showEmojiKey) {
-            alphaKeys[idx++].bounds.set(x, y, x + smallKeyW, y + rowHeight - mv * 2) // Emoji
-            x += smallKeyW + mh * 2
+            alphaKeys[idx++].bounds.set(x, y, x + emojiKeyW, y + rowHeight - mv * 2) // Emoji
+            x += emojiKeyW + mh * 2
         }
-        alphaKeys[idx++].bounds.set(x, y, x + smallKeyW, y + rowHeight - mv * 2) // Lang/Settings
-        x += smallKeyW + mh * 2
         alphaKeys[idx++].bounds.set(x, y, x + punctW, y + rowHeight - mv * 2) // ,
         x += punctW + mh * 2
         alphaKeys[idx++].bounds.set(x, y, x + spaceW, y + rowHeight - mv * 2) // Space
@@ -373,12 +378,12 @@ class KeyboardLayout(private val theme: KeyboardTheme) {
 
         y = topOffset + rowHeight * 3 + mv
         val sideKeyW = kw10 * 1.35f
-        val smallKeyW = kw10 * 0.85f
-        val enterW = kw10 * 1.35f
-        val commaW = kw10 * 0.85f
-        val dotW = kw10 * 0.85f
+        val emojiKeyW = kw10 * 0.9f
+        val enterW = kw10 * 1.45f
+        val commaW = kw10 * 0.9f
+        val dotW = kw10 * 0.9f
         val row3KeyCount = if (showEmojiKey) 6 else 5
-        val emojiSlotW = if (showEmojiKey) smallKeyW else 0f
+        val emojiSlotW = if (showEmojiKey) emojiKeyW else 0f
         val spaceW = (
             width - (sideKeyW + emojiSlotW + commaW + dotW + enterW + mh * (row3KeyCount * 2f))
         ).coerceAtLeast(kw10 * 2f)
@@ -388,8 +393,8 @@ class KeyboardLayout(private val theme: KeyboardTheme) {
         symbolKeys[idx++].bounds.set(x, y, x + sideKeyW, y + rowHeight - mv * 2)
         x += sideKeyW + mh * 2
         if (showEmojiKey) {
-            symbolKeys[idx++].bounds.set(x, y, x + smallKeyW, y + rowHeight - mv * 2)
-            x += smallKeyW + mh * 2
+            symbolKeys[idx++].bounds.set(x, y, x + emojiKeyW, y + rowHeight - mv * 2)
+            x += emojiKeyW + mh * 2
         }
         symbolKeys[idx++].bounds.set(x, y, x + commaW, y + rowHeight - mv * 2)
         x += commaW + mh * 2
@@ -429,12 +434,12 @@ class KeyboardLayout(private val theme: KeyboardTheme) {
 
         y = topOffset + rowHeight * 3 + mv
         val sideKeyW = kw10 * 1.35f
-        val smallKeyW = kw10 * 0.85f
-        val enterW = kw10 * 1.35f
-        val angleLW = kw10 * 0.85f
-        val angleRW = kw10 * 0.85f
+        val emojiKeyW = kw10 * 0.9f
+        val enterW = kw10 * 1.45f
+        val angleLW = kw10 * 0.9f
+        val angleRW = kw10 * 0.9f
         val row3KeyCount = if (showEmojiKey) 6 else 5
-        val emojiSlotW = if (showEmojiKey) smallKeyW else 0f
+        val emojiSlotW = if (showEmojiKey) emojiKeyW else 0f
         val spaceW = (
             width - (sideKeyW + emojiSlotW + angleLW + angleRW + enterW + mh * (row3KeyCount * 2f))
         ).coerceAtLeast(kw10 * 2f)
@@ -444,8 +449,8 @@ class KeyboardLayout(private val theme: KeyboardTheme) {
         symbolShiftKeys[idx++].bounds.set(x, y, x + sideKeyW, y + rowHeight - mv * 2)
         x += sideKeyW + mh * 2
         if (showEmojiKey) {
-            symbolShiftKeys[idx++].bounds.set(x, y, x + smallKeyW, y + rowHeight - mv * 2)
-            x += smallKeyW + mh * 2
+            symbolShiftKeys[idx++].bounds.set(x, y, x + emojiKeyW, y + rowHeight - mv * 2)
+            x += emojiKeyW + mh * 2
         }
         symbolShiftKeys[idx++].bounds.set(x, y, x + angleLW, y + rowHeight - mv * 2)
         x += angleLW + mh * 2

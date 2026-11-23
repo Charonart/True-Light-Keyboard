@@ -196,17 +196,21 @@ class RemotePrefsClient(context: Context) {
     var longPressEnterAction: Int
         get() = (getSnapshot()?.getInt(
             KeyboardPrefs.KEY_LONG_PRESS_ENTER_ACTION,
-            KeyboardPrefs.ENTER_LONG_PRESS_EMOJI
-        ) ?: KeyboardPrefs.ENTER_LONG_PRESS_EMOJI)
-            .coerceIn(KeyboardPrefs.ENTER_LONG_PRESS_NONE, KeyboardPrefs.ENTER_LONG_PRESS_NEWLINE)
+            KeyboardPrefs.ENTER_LONG_PRESS_POPUP
+        ) ?: KeyboardPrefs.ENTER_LONG_PRESS_POPUP)
+            .coerceIn(KeyboardPrefs.ENTER_LONG_PRESS_NONE, KeyboardPrefs.ENTER_LONG_PRESS_POPUP)
         set(value) = putInt(
             KeyboardPrefs.KEY_LONG_PRESS_ENTER_ACTION,
-            value.coerceIn(KeyboardPrefs.ENTER_LONG_PRESS_NONE, KeyboardPrefs.ENTER_LONG_PRESS_NEWLINE)
+            value.coerceIn(KeyboardPrefs.ENTER_LONG_PRESS_NONE, KeyboardPrefs.ENTER_LONG_PRESS_POPUP)
         )
 
     var showEmojiKey: Boolean
-        get() = getSnapshot()?.getBoolean(KeyboardPrefs.KEY_SHOW_EMOJI_KEY, true) ?: true
+        get() = getSnapshot()?.getBoolean(KeyboardPrefs.KEY_SHOW_EMOJI_KEY, false) ?: false
         set(value) = putBool(KeyboardPrefs.KEY_SHOW_EMOJI_KEY, value)
+
+    var keypressAnimationEnabled: Boolean
+        get() = getSnapshot()?.getBoolean(KeyboardPrefs.KEY_KEYPRESS_ANIMATION, true) ?: true
+        set(value) = putBool(KeyboardPrefs.KEY_KEYPRESS_ANIMATION, value)
 
     fun addLanguage(langId: String) {
         invalidateCache()

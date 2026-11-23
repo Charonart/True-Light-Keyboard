@@ -198,6 +198,7 @@ class SettingsActivity : AppCompatActivity() {
     private lateinit var switchSubLabels: MaterialSwitch
     private lateinit var switchLongPress: MaterialSwitch
     private lateinit var switchHaptic: MaterialSwitch
+    private lateinit var switchKeypressAnim: MaterialSwitch
 
     // Resolved Material 3 dynamic color tokens
     private var isNightMode = false
@@ -1027,6 +1028,7 @@ class SettingsActivity : AppCompatActivity() {
             )
         }
         val segmentDefs = arrayOf(
+            "Popup" to KeyboardPrefs.ENTER_LONG_PRESS_POPUP,
             "Emoji" to KeyboardPrefs.ENTER_LONG_PRESS_EMOJI,
             "Newline" to KeyboardPrefs.ENTER_LONG_PRESS_NEWLINE,
             "Off" to KeyboardPrefs.ENTER_LONG_PRESS_NONE
@@ -1035,9 +1037,10 @@ class SettingsActivity : AppCompatActivity() {
             val (label, actionVal) = segmentDefs[idx]
             TextView(this).apply {
                 text = label
-                textSize = 13f
+                textSize = 12.5f
+                maxLines = 1
                 gravity = Gravity.CENTER
-                setPadding(dp(6), dp(9), dp(6), dp(9))
+                setPadding(dp(4), dp(9), dp(4), dp(9))
                 layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
                 setOnClickListener {
                     remotePrefs.longPressEnterAction = actionVal
@@ -1050,8 +1053,8 @@ class SettingsActivity : AppCompatActivity() {
         body.addView(createDivider())
 
         val emojiKeyRow = createSwitchRow(
-            title = "Emoji key on bottom row",
-            subtitle = "Off = wider spacebar",
+            title = "Show Emoji key",
+            subtitle = "Extra key on bottom row",
             checked = remotePrefs.showEmojiKey
         ) { isChecked ->
             remotePrefs.showEmojiKey = isChecked
@@ -1083,7 +1086,7 @@ class SettingsActivity : AppCompatActivity() {
 
         val clipRow = createSwitchRow(
             title = "Clipboard history",
-            subtitle = "Last 10 items, RAM-only",
+            subtitle = "Last 10 text & image clips (RAM only)",
             checked = remotePrefs.clipboardEnabled
         ) {
             remotePrefs.clipboardEnabled = it
@@ -1294,6 +1297,16 @@ class SettingsActivity : AppCompatActivity() {
         ) { remotePrefs.hapticEnabled = it }
         switchHaptic = hapRow.second
         body.addView(hapRow.first)
+
+        body.addView(createDivider())
+
+        val animRow = createSwitchRow(
+            title = "Keypress animation",
+            subtitle = "Subtle 95ms tap feedback",
+            checked = remotePrefs.keypressAnimationEnabled
+        ) { remotePrefs.keypressAnimationEnabled = it }
+        switchKeypressAnim = animRow.second
+        body.addView(animRow.first)
 
         return card
     }
@@ -1510,6 +1523,7 @@ class SettingsActivity : AppCompatActivity() {
             switchSubLabels.isChecked = remotePrefs.showSubLabels
             switchLongPress.isChecked = remotePrefs.longPressSymbols
             switchHaptic.isChecked = remotePrefs.hapticEnabled
+            switchKeypressAnim.isChecked = remotePrefs.keypressAnimationEnabled
         } finally {
             isSyncingUi = false
         }
@@ -1517,6 +1531,7 @@ class SettingsActivity : AppCompatActivity() {
 
     private fun updateEnterLongPressSegments(action: Int) {
         val actions = intArrayOf(
+            KeyboardPrefs.ENTER_LONG_PRESS_POPUP,
             KeyboardPrefs.ENTER_LONG_PRESS_EMOJI,
             KeyboardPrefs.ENTER_LONG_PRESS_NEWLINE,
             KeyboardPrefs.ENTER_LONG_PRESS_NONE
