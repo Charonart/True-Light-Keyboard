@@ -176,15 +176,22 @@ class SettingsActivity : AppCompatActivity() {
 
     // Typing Tab views
     private lateinit var languagesContainer: LinearLayout
-    private lateinit var viToneRow: LinearLayout
+    private lateinit var viOptionsPanel: LinearLayout
     private lateinit var viToneValueView: TextView
+    private lateinit var switchViAutoRestore: MaterialSwitch
     private lateinit var switchSuggestions: MaterialSwitch
     private lateinit var switchAutoCorrect: MaterialSwitch
-    private lateinit var enterLongPressSegments: Array<TextView>
-    private lateinit var switchShowEmojiKey: MaterialSwitch
     private lateinit var switchAutoCaps: MaterialSwitch
     private lateinit var switchDoubleSpace: MaterialSwitch
+    private lateinit var switchSmartPunct: MaterialSwitch
     private lateinit var switchClipboard: MaterialSwitch
+    private lateinit var enterLongPressSegments: Array<TextView>
+    private lateinit var longPressDelayChip: TextView
+    private lateinit var longPressDelaySlider: Slider
+    private lateinit var switchLongPress: MaterialSwitch
+    private lateinit var switchSpaceGlide: MaterialSwitch
+    private lateinit var switchSpaceLongPressLang: MaterialSwitch
+    private lateinit var switchSwipeDeleteWord: MaterialSwitch
 
     // Style Tab views
     private lateinit var themePresetCards: Array<MaterialCardView>
@@ -192,13 +199,24 @@ class SettingsActivity : AppCompatActivity() {
     private lateinit var themePresetSubtitles: Array<TextView>
     private lateinit var switchCustomCss: MaterialSwitch
     private lateinit var cssStatusChip: TextView
+    private lateinit var emojiModeSegments: Array<TextView>
+    private lateinit var switchKeyPopup: MaterialSwitch
+    private lateinit var switchKeypressAnim: MaterialSwitch
+    private lateinit var switchTopUtilityBar: MaterialSwitch
+    private lateinit var switchNumberRow: MaterialSwitch
+    private lateinit var individualKeysSummaryChip: TextView
+    private lateinit var individualKeysContainer: LinearLayout
+    private var isIndividualKeysExpanded = false
+    private lateinit var switchSettingsKey: MaterialSwitch
+    private lateinit var switchSubLabels: MaterialSwitch
+    private lateinit var switchCommaKey: MaterialSwitch
+    private lateinit var switchPeriodKey: MaterialSwitch
     private lateinit var heightValueChip: TextView
     private lateinit var heightSlider: Slider
-    private lateinit var switchNumberRow: MaterialSwitch
-    private lateinit var switchSubLabels: MaterialSwitch
-    private lateinit var switchLongPress: MaterialSwitch
     private lateinit var switchHaptic: MaterialSwitch
-    private lateinit var switchKeypressAnim: MaterialSwitch
+    private lateinit var hapticStrengthContainer: LinearLayout
+    private lateinit var hapticStrengthSegments: Array<TextView>
+    private lateinit var switchSound: MaterialSwitch
 
     // Resolved Material 3 dynamic color tokens
     private var isNightMode = false
@@ -462,9 +480,12 @@ class SettingsActivity : AppCompatActivity() {
         }
         bar.addView(topRamPill)
 
-        bar.addView(createChip("v${getAppVersionName()}", colSurfaceContainer, colOnSurfaceVariant, colOutlineVariant).apply {
+        bar.addView(createChip("v${getAppVersionName()}", colPrimaryContainer, colOnPrimaryContainer).apply {
             maxLines = 1
-            setPadding(dp(8), dp(4), dp(8), dp(4))
+            setPadding(dp(9), dp(4), dp(9), dp(4))
+            setOnClickListener {
+                ChangelogSheet.show(this@SettingsActivity, getAppVersionName())
+            }
         })
 
         return bar
@@ -641,6 +662,76 @@ class SettingsActivity : AppCompatActivity() {
         row.addView(textCol)
         row.addView(sw)
         return row to sw
+    }
+
+    private fun createSegmentedControl(
+        labels: Array<String>,
+        onSelected: (Int) -> Unit
+    ): Pair<LinearLayout, Array<TextView>> {
+        val segContainer = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            background = pillBg(colSurfaceContainer, 14, colOutlineVariant)
+            setPadding(dp(4), dp(4), dp(4), dp(4))
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            )
+        }
+        val segments = Array(labels.size) { idx ->
+            TextView(this).apply {
+                text = labels[idx]
+                textSize = 12.5f
+                maxLines = 1
+                gravity = Gravity.CENTER
+                setPadding(dp(4), dp(9), dp(4), dp(9))
+                layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+                setOnClickListener {
+                    if (isEnabled && !isSyncingUi) {
+                        onSelected(idx)
+                    }
+                }
+            }.also { segContainer.addView(it) }
+        }
+        return segContainer to segments
+    }
+
+    private fun updateSegmentedControl(
+        segments: Array<TextView>,
+        selectedIndex: Int,
+        enabled: Boolean = true
+    ) {
+        val clamped = selectedIndex.coerceIn(0, segments.lastIndex)
+        for (i in segments.indices) {
+            val tv = segments[i]
+            tv.isEnabled = enabled
+            val selected = (i == clamped)
+            if (selected) {
+                tv.background = pillBg(colPrimaryContainer, 10)
+                tv.setTextColor(colOnPrimaryContainer)
+                tv.typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
+            } else {
+                tv.background = null
+                tv.setTextColor(colOnSurfaceVariant)
+                tv.typeface = Typeface.DEFAULT
+            }
+        }
+    }
+
+    private fun createThemeSwatches(bgColor: Int, keyColor: Int, accentColor: Int): LinearLayout {
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        val colors = intArrayOf(bgColor, keyColor, accentColor)
+        for (i in colors.indices) {
+            row.addView(View(this).apply {
+                background = pillBg(colors[i], 100, colOutlineVariant)
+                layoutParams = LinearLayout.LayoutParams(dp(10), dp(10)).apply {
+                    if (i < colors.lastIndex) marginEnd = dp(4)
+                }
+            })
+        }
+        return row
     }
 
     // =========================================================================
@@ -933,18 +1024,22 @@ class SettingsActivity : AppCompatActivity() {
         btnRow.addView(btnImport)
         body.addView(btnRow)
 
-        // Vietnamese tone placement selector (shown only when Vietnamese is added)
-        viToneRow = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
+        // Vietnamese options sub-panel (shown only when Vietnamese is added)
+        viOptionsPanel = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
             background = pillBg(colSurfaceContainer, 14)
-            setPadding(dp(14), dp(12), dp(12), dp(12))
+            setPadding(dp(14), dp(12), dp(14), dp(10))
             layoutParams = LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT
             ).apply {
                 topMargin = dp(12)
             }
+        }
+
+        val viToneRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
             setOnClickListener { showVietnameseToneDialog() }
         }
         val viCol = LinearLayout(this).apply {
@@ -964,13 +1059,25 @@ class SettingsActivity : AppCompatActivity() {
         viCol.addView(viToneValueView)
         viToneRow.addView(viCol)
         viToneRow.addView(createChip("Change", colPrimaryContainer, colOnPrimaryContainer))
-        body.addView(viToneRow)
+        viOptionsPanel.addView(viToneRow)
+
+        viOptionsPanel.addView(createDivider())
+
+        val viRestoreRow = createSwitchRow(
+            title = "Auto-restore English",
+            subtitle = "Keep words like 'window' intact",
+            checked = remotePrefs.viAutoRestoreEnabled
+        ) { remotePrefs.viAutoRestoreEnabled = it }
+        switchViAutoRestore = viRestoreRow.second
+        viOptionsPanel.addView(viRestoreRow.first)
+
+        body.addView(viOptionsPanel)
 
         return card
     }
 
     private fun buildSuggestionsCard(): View {
-        val (card, body) = createCard(title = "Suggestions")
+        val (card, body) = createCard(title = "Smart Typing & Suggestions")
 
         val sugRow = createSwitchRow(
             title = "Text suggestions",
@@ -1003,65 +1110,6 @@ class SettingsActivity : AppCompatActivity() {
         switchAutoCorrect.isEnabled = remotePrefs.suggestionsEnabled
         body.addView(acRow.first)
 
-        return card
-    }
-
-    private fun buildGesturesCard(): View {
-        val (card, body) = createCard(title = "Typing & Shortcuts")
-
-        // Long-press Enter segmented selector
-        body.addView(TextView(this).apply {
-            text = "Long-press Enter"
-            textSize = 15f
-            typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
-            setTextColor(colOnSurface)
-            setPadding(0, 0, 0, dp(8))
-        })
-
-        val segContainer = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            background = pillBg(colSurfaceContainer, 14, colOutlineVariant)
-            setPadding(dp(4), dp(4), dp(4), dp(4))
-            layoutParams = LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT
-            )
-        }
-        val segmentDefs = arrayOf(
-            "Popup" to KeyboardPrefs.ENTER_LONG_PRESS_POPUP,
-            "Emoji" to KeyboardPrefs.ENTER_LONG_PRESS_EMOJI,
-            "Newline" to KeyboardPrefs.ENTER_LONG_PRESS_NEWLINE,
-            "Off" to KeyboardPrefs.ENTER_LONG_PRESS_NONE
-        )
-        enterLongPressSegments = Array(segmentDefs.size) { idx ->
-            val (label, actionVal) = segmentDefs[idx]
-            TextView(this).apply {
-                text = label
-                textSize = 12.5f
-                maxLines = 1
-                gravity = Gravity.CENTER
-                setPadding(dp(4), dp(9), dp(4), dp(9))
-                layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
-                setOnClickListener {
-                    remotePrefs.longPressEnterAction = actionVal
-                    updateEnterLongPressSegments(actionVal)
-                }
-            }.also { segContainer.addView(it) }
-        }
-        body.addView(segContainer)
-
-        body.addView(createDivider())
-
-        val emojiKeyRow = createSwitchRow(
-            title = "Show Emoji key",
-            subtitle = "Extra key on bottom row",
-            checked = remotePrefs.showEmojiKey
-        ) { isChecked ->
-            remotePrefs.showEmojiKey = isChecked
-        }
-        switchShowEmojiKey = emojiKeyRow.second
-        body.addView(emojiKeyRow.first)
-
         body.addView(createDivider())
 
         val capsRow = createSwitchRow(
@@ -1084,6 +1132,16 @@ class SettingsActivity : AppCompatActivity() {
 
         body.addView(createDivider())
 
+        val smartPunctRow = createSwitchRow(
+            title = "Smart punctuation",
+            subtitle = "Auto-space after , . ? !",
+            checked = remotePrefs.smartPunctuationEnabled
+        ) { remotePrefs.smartPunctuationEnabled = it }
+        switchSmartPunct = smartPunctRow.second
+        body.addView(smartPunctRow.first)
+
+        body.addView(createDivider())
+
         val clipRow = createSwitchRow(
             title = "Clipboard history",
             subtitle = "Last 10 text & image clips (RAM only)",
@@ -1098,15 +1156,130 @@ class SettingsActivity : AppCompatActivity() {
         return card
     }
 
+    private fun buildGesturesCard(): View {
+        val (card, body) = createCard(title = "Gestures & Shortcuts")
+
+        // Long-press Enter 4-pill segmented selector
+        body.addView(TextView(this).apply {
+            text = "Long-press Enter"
+            textSize = 15f
+            typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+            setTextColor(colOnSurface)
+            setPadding(0, 0, 0, dp(8))
+        })
+
+        val enterActions = intArrayOf(
+            KeyboardPrefs.ENTER_LONG_PRESS_POPUP,
+            KeyboardPrefs.ENTER_LONG_PRESS_EMOJI,
+            KeyboardPrefs.ENTER_LONG_PRESS_NEWLINE,
+            KeyboardPrefs.ENTER_LONG_PRESS_NONE
+        )
+        val (enterSegView, enterSegs) = createSegmentedControl(
+            arrayOf("Popup", "Emoji", "Newline", "Off")
+        ) { idx ->
+            val actionVal = enterActions[idx]
+            remotePrefs.longPressEnterAction = actionVal
+            updateEnterLongPressSegments(actionVal)
+        }
+        enterLongPressSegments = enterSegs
+        body.addView(enterSegView)
+
+        body.addView(createDivider())
+
+        // Long-press delay slider (200..600 ms, step 20 ms)
+        val delayHeader = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        delayHeader.addView(TextView(this).apply {
+            text = "Long-press delay"
+            textSize = 15f
+            typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+            setTextColor(colOnSurface)
+            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+        })
+        longPressDelayChip = createChip(
+            "${snapLongPressDelay(remotePrefs.longPressDelayMs)} ms",
+            colPrimaryContainer,
+            colOnPrimaryContainer
+        )
+        delayHeader.addView(longPressDelayChip)
+        body.addView(delayHeader)
+
+        longPressDelaySlider = Slider(this).apply {
+            valueFrom = KeyboardPrefs.MIN_LONG_PRESS_MS.toFloat()
+            valueTo = KeyboardPrefs.MAX_LONG_PRESS_MS.toFloat()
+            stepSize = 20f
+            value = snapLongPressDelay(remotePrefs.longPressDelayMs).toFloat()
+            addOnChangeListener { _, newValue, fromUser ->
+                val ms = newValue.roundToInt()
+                longPressDelayChip.text = "$ms ms"
+                if (fromUser && !isSyncingUi) {
+                    remotePrefs.longPressDelayMs = ms
+                }
+            }
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply {
+                topMargin = dp(4)
+            }
+        }
+        body.addView(longPressDelaySlider)
+
+        body.addView(createDivider())
+
+        val lpRow = createSwitchRow(
+            title = "Long-press symbols & accents",
+            subtitle = "Hold letter for symbol or accent",
+            checked = remotePrefs.longPressSymbols
+        ) { remotePrefs.longPressSymbols = it }
+        switchLongPress = lpRow.second
+        body.addView(lpRow.first)
+
+        body.addView(createDivider())
+
+        val glideRow = createSwitchRow(
+            title = "Spacebar cursor glide",
+            subtitle = "Slide Space left or right to move cursor",
+            checked = remotePrefs.spaceCursorGlideEnabled
+        ) { remotePrefs.spaceCursorGlideEnabled = it }
+        switchSpaceGlide = glideRow.second
+        body.addView(glideRow.first)
+
+        body.addView(createDivider())
+
+        val spaceLangRow = createSwitchRow(
+            title = "Spacebar hold for language",
+            subtitle = "Long-press Space to cycle language",
+            checked = remotePrefs.spaceLongPressLangEnabled
+        ) { remotePrefs.spaceLongPressLangEnabled = it }
+        switchSpaceLongPressLang = spaceLangRow.second
+        body.addView(spaceLangRow.first)
+
+        body.addView(createDivider())
+
+        val swipeDelRow = createSwitchRow(
+            title = "Swipe Backspace to delete word",
+            subtitle = "Swipe left from Backspace key",
+            checked = remotePrefs.swipeDeleteWordEnabled
+        ) { remotePrefs.swipeDeleteWordEnabled = it }
+        switchSwipeDeleteWord = swipeDelRow.second
+        body.addView(swipeDelRow.first)
+
+        return card
+    }
+
     // =========================================================================
-    // TAB 3 — STYLE (THEME PRESETS, CUSTOM CSS, LAYOUT & FEEL)
+    // TAB 3 — STYLE (THEME, CUSTOM CSS, KEYBOARD ELEMENTS, SIZE & FEEDBACK)
     // =========================================================================
 
     private fun buildStyleTab(): View {
         val col = createTabColumn()
         col.addView(buildThemePresetsCard())
         col.addView(buildCustomCssCard())
-        col.addView(buildLayoutAndFeelCard())
+        col.addView(buildKeyboardElementsCard())
+        col.addView(buildSizeAndFeedbackCard())
         return col
     }
 
@@ -1118,6 +1291,12 @@ class SettingsActivity : AppCompatActivity() {
             "Dark" to "Slate",
             "AMOLED" to "Pure black",
             "Light" to "Paper white"
+        )
+        val swatches = arrayOf(
+            intArrayOf(colSurfaceHigh, colPrimaryContainer, colPrimary),
+            intArrayOf(0xFF1E1F22.toInt(), 0xFF2B2D30.toInt(), 0xFF3574F0.toInt()),
+            intArrayOf(0xFF000000.toInt(), 0xFF141518.toInt(), 0xFF3574F0.toInt()),
+            intArrayOf(0xFFE8ECF1.toInt(), 0xFFFFFFFF.toInt(), 0xFF1A73E8.toInt())
         )
         val cardsList = ArrayList<MaterialCardView>(4)
         val titlesList = ArrayList<TextView>(4)
@@ -1136,6 +1315,7 @@ class SettingsActivity : AppCompatActivity() {
             for (colIdx in 0 until 2) {
                 val modeIdx = rowIdx * 2 + colIdx
                 val (title, sub) = presets[modeIdx]
+                val swColors = swatches[modeIdx]
                 val itemCard = MaterialCardView(this).apply {
                     radius = dp(14).toFloat()
                     cardElevation = 0f
@@ -1152,17 +1332,25 @@ class SettingsActivity : AppCompatActivity() {
                     orientation = LinearLayout.VERTICAL
                     setPadding(dp(12), dp(12), dp(12), dp(12))
                 }
+                val topRow = LinearLayout(this).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    gravity = Gravity.CENTER_VERTICAL
+                }
                 val tvTitle = TextView(this).apply {
                     text = title
                     textSize = 14f
                     typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
+                    layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
                 }
+                topRow.addView(tvTitle)
+                topRow.addView(createThemeSwatches(swColors[0], swColors[1], swColors[2]))
+
                 val tvSub = TextView(this).apply {
                     text = sub
                     textSize = 11.5f
-                    setPadding(0, dp(2), 0, 0)
+                    setPadding(0, dp(3), 0, 0)
                 }
-                inner.addView(tvTitle)
+                inner.addView(topRow)
                 inner.addView(tvSub)
                 itemCard.addView(inner)
 
@@ -1219,8 +1407,192 @@ class SettingsActivity : AppCompatActivity() {
         return card
     }
 
-    private fun buildLayoutAndFeelCard(): View {
-        val (card, body) = createCard(title = "Layout & Feel")
+    private fun buildKeyboardElementsCard(): View {
+        val (card, body) = createCard(
+            title = "Keyboard Elements",
+            subtitle = "Choose exactly what appears on your keyboard"
+        )
+
+        // Emoji button 3-pill segmented selector (Top Bar / Bottom / Hidden)
+        body.addView(TextView(this).apply {
+            text = "Emoji button"
+            textSize = 15f
+            typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+            setTextColor(colOnSurface)
+            setPadding(0, 0, 0, dp(8))
+        })
+
+        val emojiModes = intArrayOf(
+            KeyboardPrefs.EMOJI_BTN_TOP_BAR,
+            KeyboardPrefs.EMOJI_BTN_BOTTOM_ROW,
+            KeyboardPrefs.EMOJI_BTN_HIDDEN
+        )
+        val (emojiSegView, emojiSegs) = createSegmentedControl(
+            arrayOf("Top Bar", "Bottom", "Hidden")
+        ) { idx ->
+            val mode = emojiModes[idx]
+            remotePrefs.emojiButtonMode = mode
+            updateSegmentedControl(emojiModeSegments, idx, enabled = true)
+        }
+        emojiModeSegments = emojiSegs
+        body.addView(emojiSegView)
+
+        body.addView(createDivider())
+
+        val popupRow = createSwitchRow(
+            title = "Key preview popup",
+            subtitle = "Floating letter bubble on tap",
+            checked = remotePrefs.keyPopupEnabled
+        ) { remotePrefs.keyPopupEnabled = it }
+        switchKeyPopup = popupRow.second
+        body.addView(popupRow.first)
+
+        body.addView(createDivider())
+
+        val animRow = createSwitchRow(
+            title = "Keypress animation",
+            subtitle = "Subtle 95 ms tap bounce",
+            checked = remotePrefs.keypressAnimationEnabled
+        ) { remotePrefs.keypressAnimationEnabled = it }
+        switchKeypressAnim = animRow.second
+        body.addView(animRow.first)
+
+        body.addView(createDivider())
+
+        val topBarRow = createSwitchRow(
+            title = "Top utility bar",
+            subtitle = "Clipboard, language & quick tools",
+            checked = remotePrefs.showTopUtilityBar
+        ) { isChecked ->
+            remotePrefs.showTopUtilityBar = isChecked
+            switchSettingsKey.isEnabled = isChecked
+            updateIndividualKeysSummary()
+        }
+        switchTopUtilityBar = topBarRow.second
+        body.addView(topBarRow.first)
+
+        body.addView(createDivider())
+
+        val numRow = createSwitchRow(
+            title = "Dedicated number row",
+            subtitle = "Fixed 1–0 row above letters",
+            checked = remotePrefs.showNumberRow
+        ) { remotePrefs.showNumberRow = it }
+        switchNumberRow = numRow.second
+        body.addView(numRow.first)
+
+        // Sleek collapsible tonal drawer for individual key toggles (keeps Style tab clean & airy!)
+        val customizeHeader = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            background = pillBg(colSurfaceContainer, 14)
+            setPadding(dp(14), dp(12), dp(12), dp(12))
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply {
+                topMargin = dp(12)
+            }
+            setOnClickListener {
+                isIndividualKeysExpanded = !isIndividualKeysExpanded
+                individualKeysContainer.visibility = if (isIndividualKeysExpanded) View.VISIBLE else View.GONE
+                updateIndividualKeysSummary()
+            }
+        }
+        val custTextCol = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
+                marginEnd = dp(8)
+            }
+        }
+        custTextCol.addView(TextView(this).apply {
+            text = "Customize individual keys"
+            textSize = 14.5f
+            typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+            setTextColor(colOnSurface)
+        })
+        custTextCol.addView(TextView(this).apply {
+            text = "Settings gear, sub-labels, comma & period"
+            textSize = 12f
+            setTextColor(colOnSurfaceVariant)
+            setPadding(0, dp(2), 0, 0)
+        })
+        individualKeysSummaryChip = createChip("4/4 ▾", colPrimaryContainer, colOnPrimaryContainer)
+        customizeHeader.addView(custTextCol)
+        customizeHeader.addView(individualKeysSummaryChip)
+        body.addView(customizeHeader)
+
+        individualKeysContainer = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            background = pillBg(colSurfaceContainer, 14)
+            setPadding(dp(14), dp(10), dp(14), dp(10))
+            visibility = View.GONE
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply {
+                topMargin = dp(8)
+            }
+        }
+
+        val settingsKeyRow = createSwitchRow(
+            title = "Settings gear on bar",
+            subtitle = "Quick shortcut on top bar",
+            checked = remotePrefs.showSettingsKey
+        ) {
+            remotePrefs.showSettingsKey = it
+            updateIndividualKeysSummary()
+        }
+        switchSettingsKey = settingsKeyRow.second
+        switchSettingsKey.isEnabled = remotePrefs.showTopUtilityBar
+        individualKeysContainer.addView(settingsKeyRow.first)
+
+        individualKeysContainer.addView(createDivider())
+
+        val subRow = createSwitchRow(
+            title = "Key sub-labels",
+            subtitle = "Secondary symbols on letters",
+            checked = remotePrefs.showSubLabels
+        ) {
+            remotePrefs.showSubLabels = it
+            updateIndividualKeysSummary()
+        }
+        switchSubLabels = subRow.second
+        individualKeysContainer.addView(subRow.first)
+
+        individualKeysContainer.addView(createDivider())
+
+        val commaRow = createSwitchRow(
+            title = "Comma , key",
+            subtitle = "Left of spacebar",
+            checked = remotePrefs.showCommaKey
+        ) {
+            remotePrefs.showCommaKey = it
+            updateIndividualKeysSummary()
+        }
+        switchCommaKey = commaRow.second
+        individualKeysContainer.addView(commaRow.first)
+
+        individualKeysContainer.addView(createDivider())
+
+        val periodRow = createSwitchRow(
+            title = "Period . key",
+            subtitle = "Right of spacebar",
+            checked = remotePrefs.showPeriodKey
+        ) {
+            remotePrefs.showPeriodKey = it
+            updateIndividualKeysSummary()
+        }
+        switchPeriodKey = periodRow.second
+        individualKeysContainer.addView(periodRow.first)
+
+        body.addView(individualKeysContainer)
+
+        return card
+    }
+
+    private fun buildSizeAndFeedbackCard(): View {
+        val (card, body) = createCard(title = "Size & Tactile Feedback")
 
         // Height header + Material 3 Slider (180..300 step 5)
         val heightHeader = LinearLayout(this).apply {
@@ -1261,52 +1633,49 @@ class SettingsActivity : AppCompatActivity() {
 
         body.addView(createDivider())
 
-        val numRow = createSwitchRow(
-            title = "Number row",
-            subtitle = "Fixed 1–0 row above letters",
-            checked = remotePrefs.showNumberRow
-        ) { remotePrefs.showNumberRow = it }
-        switchNumberRow = numRow.second
-        body.addView(numRow.first)
-
-        body.addView(createDivider())
-
-        val subRow = createSwitchRow(
-            title = "Key sub-labels",
-            subtitle = "Show secondary symbols",
-            checked = remotePrefs.showSubLabels
-        ) { remotePrefs.showSubLabels = it }
-        switchSubLabels = subRow.second
-        body.addView(subRow.first)
-
-        body.addView(createDivider())
-
-        val lpRow = createSwitchRow(
-            title = "Long-press symbols",
-            subtitle = "Hold letter for symbol",
-            checked = remotePrefs.longPressSymbols
-        ) { remotePrefs.longPressSymbols = it }
-        switchLongPress = lpRow.second
-        body.addView(lpRow.first)
-
-        body.addView(createDivider())
-
         val hapRow = createSwitchRow(
             title = "Haptic vibration",
             checked = remotePrefs.hapticEnabled
-        ) { remotePrefs.hapticEnabled = it }
+        ) { isChecked ->
+            remotePrefs.hapticEnabled = isChecked
+            updateHapticStrengthSegments(remotePrefs.hapticStrength, isChecked)
+        }
         switchHaptic = hapRow.second
         body.addView(hapRow.first)
 
+        // Haptic strength 3-pill segmented selector (Light / Medium / Strong)
+        body.addView(TextView(this).apply {
+            text = "Vibration strength"
+            textSize = 13f
+            typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+            setTextColor(colOnSurfaceVariant)
+            setPadding(0, dp(8), 0, dp(6))
+        })
+        val hapticLevels = intArrayOf(
+            KeyboardPrefs.HAPTIC_LIGHT,
+            KeyboardPrefs.HAPTIC_MEDIUM,
+            KeyboardPrefs.HAPTIC_STRONG
+        )
+        val (hapSegView, hapSegs) = createSegmentedControl(
+            arrayOf("Light", "Medium", "Strong")
+        ) { idx ->
+            val level = hapticLevels[idx]
+            remotePrefs.hapticStrength = level
+            updateHapticStrengthSegments(level, remotePrefs.hapticEnabled)
+        }
+        hapticStrengthContainer = hapSegView
+        hapticStrengthSegments = hapSegs
+        body.addView(hapSegView)
+
         body.addView(createDivider())
 
-        val animRow = createSwitchRow(
-            title = "Keypress animation",
-            subtitle = "Subtle 95ms tap feedback",
-            checked = remotePrefs.keypressAnimationEnabled
-        ) { remotePrefs.keypressAnimationEnabled = it }
-        switchKeypressAnim = animRow.second
-        body.addView(animRow.first)
+        val soundRow = createSwitchRow(
+            title = "Keypress sound",
+            subtitle = "System tap sound effect",
+            checked = remotePrefs.soundEnabled
+        ) { remotePrefs.soundEnabled = it }
+        switchSound = soundRow.second
+        body.addView(soundRow.first)
 
         return card
     }
@@ -1348,6 +1717,44 @@ class SettingsActivity : AppCompatActivity() {
             setPadding(0, dp(3), 0, 0)
         })
         privacyBody.addView(verifiedBanner)
+
+        // Clean 1-tap "What's New · Changelog" tonal row
+        val changelogRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            background = pillBg(colSurfaceContainer, 14)
+            setPadding(dp(14), dp(12), dp(12), dp(12))
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply {
+                bottomMargin = dp(12)
+            }
+            setOnClickListener {
+                ChangelogSheet.show(this@SettingsActivity, getAppVersionName())
+            }
+        }
+        val clCol = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
+                marginEnd = dp(8)
+            }
+        }
+        clCol.addView(TextView(this).apply {
+            text = "What's New"
+            textSize = 14.5f
+            typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
+            setTextColor(colOnSurface)
+        })
+        clCol.addView(TextView(this).apply {
+            text = "View release notes & changelog"
+            textSize = 12f
+            setTextColor(colOnSurfaceVariant)
+            setPadding(0, dp(2), 0, 0)
+        })
+        changelogRow.addView(clCol)
+        changelogRow.addView(createChip("v${getAppVersionName()} ▸", colPrimaryContainer, colOnPrimaryContainer))
+        privacyBody.addView(changelogRow)
 
         lateinit var btnCheckUpdate: MaterialButton
         btnCheckUpdate = createFilledButton("Check for Updates") {
@@ -1407,6 +1814,13 @@ class SettingsActivity : AppCompatActivity() {
         val offset = clamped - KeyboardPrefs.MIN_HEIGHT_DP
         val snapped = ((offset + 2) / 5) * 5 + KeyboardPrefs.MIN_HEIGHT_DP
         return snapped.coerceIn(KeyboardPrefs.MIN_HEIGHT_DP, KeyboardPrefs.MAX_HEIGHT_DP)
+    }
+
+    private fun snapLongPressDelay(delayMs: Int): Int {
+        val clamped = delayMs.coerceIn(KeyboardPrefs.MIN_LONG_PRESS_MS, KeyboardPrefs.MAX_LONG_PRESS_MS)
+        val offset = clamped - KeyboardPrefs.MIN_LONG_PRESS_MS
+        val snapped = ((offset + 10) / 20) * 20 + KeyboardPrefs.MIN_LONG_PRESS_MS
+        return snapped.coerceIn(KeyboardPrefs.MIN_LONG_PRESS_MS, KeyboardPrefs.MAX_LONG_PRESS_MS)
     }
 
     private fun refreshRamMonitor() {
@@ -1498,6 +1912,8 @@ class SettingsActivity : AppCompatActivity() {
             updateThemePresetSelection(remotePrefs.themeMode)
             updateCssStatusChip()
             updateEnterLongPressSegments(remotePrefs.longPressEnterAction)
+            updateEmojiModeSegments(remotePrefs.emojiButtonMode)
+            updateHapticStrengthSegments(remotePrefs.hapticStrength, remotePrefs.hapticEnabled)
 
             val snappedH = snapHeightToStep(remotePrefs.keyboardHeightDp)
             heightValueChip.text = "$snappedH dp"
@@ -1505,25 +1921,46 @@ class SettingsActivity : AppCompatActivity() {
                 heightSlider.value = snappedH.toFloat()
             }
 
+            val snappedDelay = snapLongPressDelay(remotePrefs.longPressDelayMs)
+            longPressDelayChip.text = "$snappedDelay ms"
+            if (longPressDelaySlider.value.roundToInt() != snappedDelay) {
+                longPressDelaySlider.value = snappedDelay.toFloat()
+            }
+
             viToneValueView.text = if (remotePrefs.vietnameseModernTone) {
                 "New style (hoà, hoè, thuý)"
             } else {
                 "Old style (hòa, hòe, thúy)"
             }
+            switchViAutoRestore.isChecked = remotePrefs.viAutoRestoreEnabled
 
             switchSuggestions.isChecked = remotePrefs.suggestionsEnabled
             switchAutoCorrect.isEnabled = remotePrefs.suggestionsEnabled
             switchAutoCorrect.isChecked = remotePrefs.autoCorrectEnabled
-            switchShowEmojiKey.isChecked = remotePrefs.showEmojiKey
             switchAutoCaps.isChecked = remotePrefs.autoCapsEnabled
             switchDoubleSpace.isChecked = remotePrefs.doubleSpacePeriodEnabled
+            switchSmartPunct.isChecked = remotePrefs.smartPunctuationEnabled
             switchClipboard.isChecked = remotePrefs.clipboardEnabled
-            switchCustomCss.isChecked = remotePrefs.customCssEnabled
-            switchNumberRow.isChecked = remotePrefs.showNumberRow
-            switchSubLabels.isChecked = remotePrefs.showSubLabels
+
             switchLongPress.isChecked = remotePrefs.longPressSymbols
-            switchHaptic.isChecked = remotePrefs.hapticEnabled
+            switchSpaceGlide.isChecked = remotePrefs.spaceCursorGlideEnabled
+            switchSpaceLongPressLang.isChecked = remotePrefs.spaceLongPressLangEnabled
+            switchSwipeDeleteWord.isChecked = remotePrefs.swipeDeleteWordEnabled
+
+            switchCustomCss.isChecked = remotePrefs.customCssEnabled
+            switchKeyPopup.isChecked = remotePrefs.keyPopupEnabled
             switchKeypressAnim.isChecked = remotePrefs.keypressAnimationEnabled
+            switchTopUtilityBar.isChecked = remotePrefs.showTopUtilityBar
+            switchNumberRow.isChecked = remotePrefs.showNumberRow
+            switchSettingsKey.isEnabled = remotePrefs.showTopUtilityBar
+            switchSettingsKey.isChecked = remotePrefs.showSettingsKey
+            switchSubLabels.isChecked = remotePrefs.showSubLabels
+            switchCommaKey.isChecked = remotePrefs.showCommaKey
+            switchPeriodKey.isChecked = remotePrefs.showPeriodKey
+            updateIndividualKeysSummary()
+
+            switchHaptic.isChecked = remotePrefs.hapticEnabled
+            switchSound.isChecked = remotePrefs.soundEnabled
         } finally {
             isSyncingUi = false
         }
@@ -1536,19 +1973,39 @@ class SettingsActivity : AppCompatActivity() {
             KeyboardPrefs.ENTER_LONG_PRESS_NEWLINE,
             KeyboardPrefs.ENTER_LONG_PRESS_NONE
         )
-        for (i in enterLongPressSegments.indices) {
-            val tv = enterLongPressSegments[i]
-            val selected = (actions[i] == action)
-            if (selected) {
-                tv.background = pillBg(colPrimaryContainer, 10)
-                tv.setTextColor(colOnPrimaryContainer)
-                tv.typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
-            } else {
-                tv.background = null
-                tv.setTextColor(colOnSurfaceVariant)
-                tv.typeface = Typeface.DEFAULT
-            }
-        }
+        val idx = actions.indexOf(action).let { if (it >= 0) it else 0 }
+        updateSegmentedControl(enterLongPressSegments, idx, enabled = true)
+    }
+
+    private fun updateEmojiModeSegments(mode: Int) {
+        val modes = intArrayOf(
+            KeyboardPrefs.EMOJI_BTN_TOP_BAR,
+            KeyboardPrefs.EMOJI_BTN_BOTTOM_ROW,
+            KeyboardPrefs.EMOJI_BTN_HIDDEN
+        )
+        val idx = modes.indexOf(mode).let { if (it >= 0) it else 0 }
+        updateSegmentedControl(emojiModeSegments, idx, enabled = true)
+    }
+
+    private fun updateHapticStrengthSegments(strength: Int, hapticOn: Boolean) {
+        val levels = intArrayOf(
+            KeyboardPrefs.HAPTIC_LIGHT,
+            KeyboardPrefs.HAPTIC_MEDIUM,
+            KeyboardPrefs.HAPTIC_STRONG
+        )
+        val idx = levels.indexOf(strength).let { if (it >= 0) it else 1 }
+        hapticStrengthContainer.alpha = if (hapticOn) 1f else 0.42f
+        updateSegmentedControl(hapticStrengthSegments, idx, enabled = hapticOn)
+    }
+
+    private fun updateIndividualKeysSummary() {
+        var enabledCount = 0
+        if (switchTopUtilityBar.isChecked && switchSettingsKey.isChecked) enabledCount++
+        if (switchSubLabels.isChecked) enabledCount++
+        if (switchCommaKey.isChecked) enabledCount++
+        if (switchPeriodKey.isChecked) enabledCount++
+        val arrow = if (isIndividualKeysExpanded) "▴" else "▾"
+        individualKeysSummaryChip.text = "$enabledCount/4 $arrow"
     }
 
     private fun updateThemePresetSelection(selectedMode: Int) {
@@ -1667,7 +2124,7 @@ class SettingsActivity : AppCompatActivity() {
             languagesContainer.addView(row)
         }
 
-        viToneRow.visibility = if (hasVietnamese) View.VISIBLE else View.GONE
+        viOptionsPanel.visibility = if (hasVietnamese) View.VISIBLE else View.GONE
     }
 
     // =========================================================================

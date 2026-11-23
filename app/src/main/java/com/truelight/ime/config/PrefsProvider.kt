@@ -78,6 +78,20 @@ class PrefsProvider : ContentProvider() {
                     putInt(KeyboardPrefs.KEY_LONG_PRESS_ENTER_ACTION, prefs.longPressEnterAction)
                     putBoolean(KeyboardPrefs.KEY_SHOW_EMOJI_KEY, prefs.showEmojiKey)
                     putBoolean(KeyboardPrefs.KEY_KEYPRESS_ANIMATION, prefs.keypressAnimationEnabled)
+                    putBoolean(KeyboardPrefs.KEY_VI_AUTO_RESTORE, prefs.viAutoRestoreEnabled)
+                    putBoolean(KeyboardPrefs.KEY_SMART_PUNCTUATION, prefs.smartPunctuationEnabled)
+                    putBoolean(KeyboardPrefs.KEY_SPACE_CURSOR_GLIDE, prefs.spaceCursorGlideEnabled)
+                    putBoolean(KeyboardPrefs.KEY_SPACE_LONG_PRESS_LANG, prefs.spaceLongPressLangEnabled)
+                    putBoolean(KeyboardPrefs.KEY_SWIPE_DELETE_WORD, prefs.swipeDeleteWordEnabled)
+                    putInt(KeyboardPrefs.KEY_LONG_PRESS_DELAY_MS, prefs.longPressDelayMs)
+                    putBoolean(KeyboardPrefs.KEY_KEY_POPUP_ENABLED, prefs.keyPopupEnabled)
+                    putBoolean(KeyboardPrefs.KEY_SHOW_TOP_UTILITY_BAR, prefs.showTopUtilityBar)
+                    putInt(KeyboardPrefs.KEY_EMOJI_BUTTON_MODE, prefs.emojiButtonMode)
+                    putBoolean(KeyboardPrefs.KEY_SHOW_SETTINGS_KEY, prefs.showSettingsKey)
+                    putBoolean(KeyboardPrefs.KEY_SHOW_COMMA_KEY, prefs.showCommaKey)
+                    putBoolean(KeyboardPrefs.KEY_SHOW_PERIOD_KEY, prefs.showPeriodKey)
+                    putBoolean(KeyboardPrefs.KEY_SOUND_ENABLED, prefs.soundEnabled)
+                    putInt(KeyboardPrefs.KEY_HAPTIC_STRENGTH, prefs.hapticStrength)
                     putInt(KeyboardPrefs.KEY_DICT_REVISION, prefs.dictRevision)
                     putInt(KeyboardPrefs.KEY_HISTORY_REVISION, prefs.historyRevision)
                     putMemoryStats(this)
@@ -111,6 +125,17 @@ class PrefsProvider : ContentProvider() {
                     KeyboardPrefs.KEY_CUSTOM_CSS_ENABLED -> prefs.customCssEnabled = value
                     KeyboardPrefs.KEY_SHOW_EMOJI_KEY -> prefs.showEmojiKey = value
                     KeyboardPrefs.KEY_KEYPRESS_ANIMATION -> prefs.keypressAnimationEnabled = value
+                    KeyboardPrefs.KEY_VI_AUTO_RESTORE -> prefs.viAutoRestoreEnabled = value
+                    KeyboardPrefs.KEY_SMART_PUNCTUATION -> prefs.smartPunctuationEnabled = value
+                    KeyboardPrefs.KEY_SPACE_CURSOR_GLIDE -> prefs.spaceCursorGlideEnabled = value
+                    KeyboardPrefs.KEY_SPACE_LONG_PRESS_LANG -> prefs.spaceLongPressLangEnabled = value
+                    KeyboardPrefs.KEY_SWIPE_DELETE_WORD -> prefs.swipeDeleteWordEnabled = value
+                    KeyboardPrefs.KEY_KEY_POPUP_ENABLED -> prefs.keyPopupEnabled = value
+                    KeyboardPrefs.KEY_SHOW_TOP_UTILITY_BAR -> prefs.showTopUtilityBar = value
+                    KeyboardPrefs.KEY_SHOW_SETTINGS_KEY -> prefs.showSettingsKey = value
+                    KeyboardPrefs.KEY_SHOW_COMMA_KEY -> prefs.showCommaKey = value
+                    KeyboardPrefs.KEY_SHOW_PERIOD_KEY -> prefs.showPeriodKey = value
+                    KeyboardPrefs.KEY_SOUND_ENABLED -> prefs.soundEnabled = value
                     else -> prefs.prefs.edit().putBoolean(key, value).apply()
                 }
                 ctx.contentResolver.notifyChange(CONTENT_URI, null)
@@ -130,6 +155,9 @@ class PrefsProvider : ContentProvider() {
                     KeyboardPrefs.KEY_THEME_MODE -> prefs.themeMode = value
                     KeyboardPrefs.KEY_KEYBOARD_HEIGHT_DP -> prefs.keyboardHeightDp = value
                     KeyboardPrefs.KEY_LONG_PRESS_ENTER_ACTION -> prefs.longPressEnterAction = value
+                    KeyboardPrefs.KEY_LONG_PRESS_DELAY_MS -> prefs.longPressDelayMs = value
+                    KeyboardPrefs.KEY_EMOJI_BUTTON_MODE -> prefs.emojiButtonMode = value
+                    KeyboardPrefs.KEY_HAPTIC_STRENGTH -> prefs.hapticStrength = value
                     KeyboardPrefs.KEY_DICT_REVISION -> prefs.dictRevision = value
                     KeyboardPrefs.KEY_HISTORY_REVISION -> prefs.historyRevision = value
                     else -> prefs.prefs.edit().putInt(key, value).apply()

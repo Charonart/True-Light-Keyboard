@@ -9,6 +9,7 @@
 
     <application
         android:allowBackup="false"
+        android:hardwareAccelerated="false"
         android:icon="@drawable/ic_launcher"
         android:label="@string/app_name"
         android:supportsRtl="true"
@@ -17,6 +18,7 @@
         <!-- Isolated :settings process so Material 3 / AndroidX / Updater NEVER consume RAM in the IME process -->
         <activity
             android:name=".settings.SettingsActivity"
+            android:hardwareAccelerated="true"
             android:label="@string/app_name"
             android:exported="true"
             android:launchMode="singleTop"

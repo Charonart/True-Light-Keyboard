@@ -212,6 +212,83 @@ class RemotePrefsClient(context: Context) {
         get() = getSnapshot()?.getBoolean(KeyboardPrefs.KEY_KEYPRESS_ANIMATION, true) ?: true
         set(value) = putBool(KeyboardPrefs.KEY_KEYPRESS_ANIMATION, value)
 
+    var viAutoRestoreEnabled: Boolean
+        get() = getSnapshot()?.getBoolean(KeyboardPrefs.KEY_VI_AUTO_RESTORE, true) ?: true
+        set(value) = putBool(KeyboardPrefs.KEY_VI_AUTO_RESTORE, value)
+
+    var smartPunctuationEnabled: Boolean
+        get() = getSnapshot()?.getBoolean(KeyboardPrefs.KEY_SMART_PUNCTUATION, true) ?: true
+        set(value) = putBool(KeyboardPrefs.KEY_SMART_PUNCTUATION, value)
+
+    var spaceCursorGlideEnabled: Boolean
+        get() = getSnapshot()?.getBoolean(KeyboardPrefs.KEY_SPACE_CURSOR_GLIDE, true) ?: true
+        set(value) = putBool(KeyboardPrefs.KEY_SPACE_CURSOR_GLIDE, value)
+
+    var spaceLongPressLangEnabled: Boolean
+        get() = getSnapshot()?.getBoolean(KeyboardPrefs.KEY_SPACE_LONG_PRESS_LANG, true) ?: true
+        set(value) = putBool(KeyboardPrefs.KEY_SPACE_LONG_PRESS_LANG, value)
+
+    var swipeDeleteWordEnabled: Boolean
+        get() = getSnapshot()?.getBoolean(KeyboardPrefs.KEY_SWIPE_DELETE_WORD, true) ?: true
+        set(value) = putBool(KeyboardPrefs.KEY_SWIPE_DELETE_WORD, value)
+
+    var longPressDelayMs: Int
+        get() = (getSnapshot()?.getInt(
+            KeyboardPrefs.KEY_LONG_PRESS_DELAY_MS,
+            KeyboardPrefs.DEFAULT_LONG_PRESS_MS
+        ) ?: KeyboardPrefs.DEFAULT_LONG_PRESS_MS)
+            .coerceIn(KeyboardPrefs.MIN_LONG_PRESS_MS, KeyboardPrefs.MAX_LONG_PRESS_MS)
+        set(value) = putInt(
+            KeyboardPrefs.KEY_LONG_PRESS_DELAY_MS,
+            value.coerceIn(KeyboardPrefs.MIN_LONG_PRESS_MS, KeyboardPrefs.MAX_LONG_PRESS_MS)
+        )
+
+    var keyPopupEnabled: Boolean
+        get() = getSnapshot()?.getBoolean(KeyboardPrefs.KEY_KEY_POPUP_ENABLED, true) ?: true
+        set(value) = putBool(KeyboardPrefs.KEY_KEY_POPUP_ENABLED, value)
+
+    var showTopUtilityBar: Boolean
+        get() = getSnapshot()?.getBoolean(KeyboardPrefs.KEY_SHOW_TOP_UTILITY_BAR, true) ?: true
+        set(value) = putBool(KeyboardPrefs.KEY_SHOW_TOP_UTILITY_BAR, value)
+
+    var emojiButtonMode: Int
+        get() = (getSnapshot()?.getInt(
+            KeyboardPrefs.KEY_EMOJI_BUTTON_MODE,
+            KeyboardPrefs.EMOJI_BTN_TOP_BAR
+        ) ?: KeyboardPrefs.EMOJI_BTN_TOP_BAR)
+            .coerceIn(KeyboardPrefs.EMOJI_BTN_TOP_BAR, KeyboardPrefs.EMOJI_BTN_HIDDEN)
+        set(value) = putInt(
+            KeyboardPrefs.KEY_EMOJI_BUTTON_MODE,
+            value.coerceIn(KeyboardPrefs.EMOJI_BTN_TOP_BAR, KeyboardPrefs.EMOJI_BTN_HIDDEN)
+        )
+
+    var showSettingsKey: Boolean
+        get() = getSnapshot()?.getBoolean(KeyboardPrefs.KEY_SHOW_SETTINGS_KEY, true) ?: true
+        set(value) = putBool(KeyboardPrefs.KEY_SHOW_SETTINGS_KEY, value)
+
+    var showCommaKey: Boolean
+        get() = getSnapshot()?.getBoolean(KeyboardPrefs.KEY_SHOW_COMMA_KEY, true) ?: true
+        set(value) = putBool(KeyboardPrefs.KEY_SHOW_COMMA_KEY, value)
+
+    var showPeriodKey: Boolean
+        get() = getSnapshot()?.getBoolean(KeyboardPrefs.KEY_SHOW_PERIOD_KEY, true) ?: true
+        set(value) = putBool(KeyboardPrefs.KEY_SHOW_PERIOD_KEY, value)
+
+    var soundEnabled: Boolean
+        get() = getSnapshot()?.getBoolean(KeyboardPrefs.KEY_SOUND_ENABLED, false) ?: false
+        set(value) = putBool(KeyboardPrefs.KEY_SOUND_ENABLED, value)
+
+    var hapticStrength: Int
+        get() = (getSnapshot()?.getInt(
+            KeyboardPrefs.KEY_HAPTIC_STRENGTH,
+            KeyboardPrefs.HAPTIC_MEDIUM
+        ) ?: KeyboardPrefs.HAPTIC_MEDIUM)
+            .coerceIn(KeyboardPrefs.HAPTIC_LIGHT, KeyboardPrefs.HAPTIC_STRONG)
+        set(value) = putInt(
+            KeyboardPrefs.KEY_HAPTIC_STRENGTH,
+            value.coerceIn(KeyboardPrefs.HAPTIC_LIGHT, KeyboardPrefs.HAPTIC_STRONG)
+        )
+
     fun addLanguage(langId: String) {
         invalidateCache()
         callProvider(PrefsProvider.METHOD_ADD_LANGUAGE, langId, null)

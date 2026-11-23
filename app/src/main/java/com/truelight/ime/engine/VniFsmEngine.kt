@@ -1,7 +1,9 @@
 package com.truelight.ime.engine
 
 /**
- * Zero-allocation Vietnamese VNI Input Engine.
+ * Zero-allocation Vietnamese VNI Input Engine with raw-key tracking and
+ * Vietnamese phonotactic auto-restore.
+ *
  * VNI keys:
  *  1 = sắc, 2 = huyền, 3 = hỏi, 4 = ngã, 5 = nặng
  *  6 = mũ (a->â, e->ê, o->ô)
@@ -14,6 +16,10 @@ class VniFsmEngine : InputEngine {
 
     companion object {
         private const val MAX_WORD_LENGTH = 64
+
+        private const val MOD_NONE = 0
+        private const val MOD_APPLIED = 1
+        private const val MOD_REVERTED = 2
     }
 
     override val acceptsDigits: Boolean = true
@@ -21,23 +27,74 @@ class VniFsmEngine : InputEngine {
     /** false = old style (hòa, thúy), true = modern style (hoà, thuý) */
     var modernTonePlacement: Boolean = false
 
+    /** true = automatically restore raw keystrokes when word breaks Vietnamese phonotactics */
+    var autoRestoreEnabled: Boolean = true
+
     private val buffer = CharArray(MAX_WORD_LENGTH)
     private var bufferLength = 0
+
+    // Raw keystrokes recorded for the current composing word (for auto-restore)
+    private val rawKeys = CharArray(MAX_WORD_LENGTH)
+    private var rawLength = 0
+
+    // Preallocated snapshot buffer for safe rollback on rejected VNI digits
+    private val snapshotBuf = CharArray(MAX_WORD_LENGTH)
+
     private val vowelIndicesScratch = IntArray(8)
     private var currentTone = VietnameseCharMap.TONE_NONE
     private var lastToneKey: Char = '\u0000'
+
+    private var hasTransformed: Boolean = false
+    private var isRawRestored: Boolean = false
 
     private val cachedResult = InputEngine.StepResult()
     private val sb = StringBuilder(MAX_WORD_LENGTH)
 
     override fun processChar(c: Char): InputEngine.StepResult {
         if (c.isDigit()) {
-            if (bufferLength > 0 && handleVniDigit(c)) {
-                cachedResult.consumed = true
-                cachedResult.text = getComposingText()
-                cachedResult.isWordTerminated = false
-                return cachedResult
+            val canTryVni = bufferLength > 0 &&
+                !isRawRestored &&
+                rawLength < MAX_WORD_LENGTH - 2 &&
+                (!autoRestoreEnabled ||
+                    VietnamesePhonotactics.isValidVietnamesePrefix(
+                        buffer, bufferLength, allowVniIntermediates = true
+                    ))
+
+            if (canTryVni) {
+                // Save lightweight snapshot in case applying the digit violates Vietnamese phonotactics
+                val savedLen = bufferLength
+                val savedTone = currentTone
+                val savedLastToneKey = lastToneKey
+                for (i in 0 until savedLen) {
+                    snapshotBuf[i] = buffer[i]
+                }
+
+                val modResult = handleVniDigit(c)
+                if (modResult == MOD_APPLIED) {
+                    if (autoRestoreEnabled &&
+                        !VietnamesePhonotactics.isValidVietnamesePrefix(
+                            buffer, bufferLength, allowVniIntermediates = true
+                        )
+                    ) {
+                        // Roll back so the digit is not swallowed into an invalid syllable (e.g. "mat2")
+                        for (i in 0 until savedLen) {
+                            buffer[i] = snapshotBuf[i]
+                        }
+                        bufferLength = savedLen
+                        currentTone = savedTone
+                        lastToneKey = savedLastToneKey
+                    } else {
+                        rawKeys[rawLength++] = c
+                        hasTransformed = true
+                        return finishStep()
+                    }
+                } else if (modResult == MOD_REVERTED) {
+                    rawKeys[rawLength++] = c
+                    isRawRestored = true
+                    return finishStep()
+                }
             }
+
             // Digit was not consumed as VNI modifier -> terminate word so caller commits digit
             cachedResult.consumed = false
             cachedResult.text = getComposingText()
@@ -55,12 +112,19 @@ class VniFsmEngine : InputEngine {
         }
 
         // Prevent buffer overflow: cleanly terminate chunk so IME commits it & starts fresh token
-        if (bufferLength >= MAX_WORD_LENGTH - 2) {
+        if (bufferLength >= MAX_WORD_LENGTH - 2 || rawLength >= MAX_WORD_LENGTH - 2) {
             cachedResult.consumed = false
             cachedResult.text = getComposingText()
             cachedResult.isWordTerminated = true
             reset()
             return cachedResult
+        }
+
+        rawKeys[rawLength++] = c
+
+        if (isRawRestored) {
+            appendChar(c)
+            return finishStep()
         }
 
         appendChar(c)
@@ -69,21 +133,19 @@ class VniFsmEngine : InputEngine {
             applyToneToBestVowel(currentTone)
         }
 
-        cachedResult.consumed = true
-        cachedResult.text = getComposingText()
-        cachedResult.isWordTerminated = false
-        return cachedResult
+        maybeAutoRestore()
+        return finishStep()
     }
 
-    private fun handleVniDigit(digit: Char): Boolean {
+    private fun handleVniDigit(digit: Char): Int {
         return when (digit) {
             '0' -> {
                 if (currentTone != VietnameseCharMap.TONE_NONE) {
                     removeCurrentTone()
                     lastToneKey = '\u0000'
-                    true
+                    MOD_APPLIED
                 } else {
-                    false
+                    MOD_NONE
                 }
             }
             '1', '2', '3', '4', '5' -> {
@@ -92,27 +154,29 @@ class VniFsmEngine : InputEngine {
                     removeCurrentTone()
                     appendChar(digit)
                     lastToneKey = '\u0000'
-                    true
+                    MOD_REVERTED
                 } else if (hasAnyVowel()) {
                     val ok = applyToneToBestVowel(tone)
                     if (ok) {
                         currentTone = tone
                         lastToneKey = digit
+                        MOD_APPLIED
+                    } else {
+                        MOD_NONE
                     }
-                    ok
                 } else {
-                    false
+                    MOD_NONE
                 }
             }
             '6' -> applyCircumflex()
             '7' -> applyHorn()
             '8' -> applyBreve()
             '9' -> applyStrokeD()
-            else -> false
+            else -> MOD_NONE
         }
     }
 
-    private fun applyCircumflex(): Boolean {
+    private fun applyCircumflex(): Int {
         for (i in bufferLength - 1 downTo 0) {
             val ch = buffer[i]
             val row = VietnameseCharMap.getVowelRow(ch)
@@ -127,21 +191,21 @@ class VniFsmEngine : InputEngine {
                 if (transformed != null) {
                     buffer[i] = transformed
                     if (currentTone != VietnameseCharMap.TONE_NONE) applyToneToBestVowel(currentTone)
-                    return true
+                    return MOD_APPLIED
                 }
             } else if (row == 2 || row == 4 || row == 7) {
                 val reverted = VietnameseCharMap.revertVowel(ch)
                 if (reverted != null) {
                     buffer[i] = reverted
                     appendChar('6')
-                    return true
+                    return MOD_REVERTED
                 }
             }
         }
-        return false
+        return MOD_NONE
     }
 
-    private fun applyHorn(): Boolean {
+    private fun applyHorn(): Int {
         for (i in bufferLength - 1 downTo 0) {
             val ch = buffer[i]
             val row = VietnameseCharMap.getVowelRow(ch)
@@ -155,7 +219,7 @@ class VniFsmEngine : InputEngine {
                         buffer[i - 1] = tU
                         buffer[i] = tO
                         if (currentTone != VietnameseCharMap.TONE_NONE) applyToneToBestVowel(currentTone)
-                        return true
+                        return MOD_APPLIED
                     }
                 }
             }
@@ -169,23 +233,27 @@ class VniFsmEngine : InputEngine {
                     if (tFirstU != null) {
                         buffer[i - 1] = tFirstU
                         if (currentTone != VietnameseCharMap.TONE_NONE) applyToneToBestVowel(currentTone)
-                        return true
+                        return MOD_APPLIED
                     }
                 } else if (prevRow == 10) {
                     val rFirstU = VietnameseCharMap.revertVowel(prevCh)
                     if (rFirstU != null) {
                         buffer[i - 1] = rFirstU
                         appendChar('7')
-                        return true
+                        return MOD_REVERTED
                     }
                 }
+            }
+            // Never transform 'u' inside onset 'qu' into 'ư'
+            if (row == 9 && i > 0 && buffer[i - 1].lowercaseChar() == 'q') {
+                continue
             }
             if (row == 6 || row == 9) {
                 val transformed = VietnameseCharMap.transformVowel(ch, 'w')
                 if (transformed != null) {
                     buffer[i] = transformed
                     if (currentTone != VietnameseCharMap.TONE_NONE) applyToneToBestVowel(currentTone)
-                    return true
+                    return MOD_APPLIED
                 }
             } else if (row == 8 || row == 10) {
                 if (row == 8 && i > 0 && VietnameseCharMap.getVowelRow(buffer[i - 1]) == 10) {
@@ -195,21 +263,21 @@ class VniFsmEngine : InputEngine {
                         buffer[i - 1] = rU
                         buffer[i] = rO
                         appendChar('7')
-                        return true
+                        return MOD_REVERTED
                     }
                 }
                 val reverted = VietnameseCharMap.revertVowel(ch)
                 if (reverted != null) {
                     buffer[i] = reverted
                     appendChar('7')
-                    return true
+                    return MOD_REVERTED
                 }
             }
         }
-        return false
+        return MOD_NONE
     }
 
-    private fun applyBreve(): Boolean {
+    private fun applyBreve(): Int {
         for (i in bufferLength - 1 downTo 0) {
             val ch = buffer[i]
             val row = VietnameseCharMap.getVowelRow(ch)
@@ -218,50 +286,64 @@ class VniFsmEngine : InputEngine {
                 if (transformed != null) {
                     buffer[i] = transformed
                     if (currentTone != VietnameseCharMap.TONE_NONE) applyToneToBestVowel(currentTone)
-                    return true
+                    return MOD_APPLIED
                 }
             } else if (row == 1) {
                 val reverted = VietnameseCharMap.revertVowel(ch)
                 if (reverted != null) {
                     buffer[i] = reverted
                     appendChar('8')
-                    return true
+                    return MOD_REVERTED
                 }
             }
         }
-        return false
+        return MOD_NONE
     }
 
-    private fun applyStrokeD(): Boolean {
+    private fun applyStrokeD(): Int {
         for (i in bufferLength - 1 downTo 0) {
             val ch = buffer[i]
             when (ch) {
                 'd' -> {
                     buffer[i] = 'đ'
-                    return true
+                    return MOD_APPLIED
                 }
                 'D' -> {
                     buffer[i] = 'Đ'
-                    return true
+                    return MOD_APPLIED
                 }
                 'đ', 'Đ' -> {
                     buffer[i] = if (ch == 'đ') 'd' else 'D'
                     appendChar('9')
-                    return true
+                    return MOD_REVERTED
                 }
             }
         }
-        return false
+        return MOD_NONE
     }
 
     override fun handleBackspace(): Boolean {
         if (bufferLength == 0) return false
+        val deletedChar = buffer[bufferLength - 1]
         bufferLength--
         lastToneKey = '\u0000'
-        recalcCurrentTone()
-        if (currentTone != VietnameseCharMap.TONE_NONE) {
-            applyToneToBestVowel(currentTone)
+
+        if (bufferLength == 0) {
+            reset()
+        } else if (isRawRestored) {
+            rawLength = bufferLength
+            for (i in 0 until bufferLength) {
+                rawKeys[i] = buffer[i]
+            }
+        } else {
+            removeLastMatchingRawKey(deletedChar)
+            recalcCurrentTone()
+            if (currentTone != VietnameseCharMap.TONE_NONE) {
+                applyToneToBestVowel(currentTone)
+            }
+            recalcHasTransformed()
         }
+
         cachedResult.consumed = true
         cachedResult.text = getComposingText()
         cachedResult.isWordTerminated = false
@@ -282,8 +364,88 @@ class VniFsmEngine : InputEngine {
 
     override fun reset() {
         bufferLength = 0
+        rawLength = 0
         currentTone = VietnameseCharMap.TONE_NONE
         lastToneKey = '\u0000'
+        hasTransformed = false
+        isRawRestored = false
+    }
+
+    private fun finishStep(): InputEngine.StepResult {
+        cachedResult.consumed = true
+        cachedResult.text = getComposingText()
+        cachedResult.isWordTerminated = false
+        return cachedResult
+    }
+
+    private fun maybeAutoRestore() {
+        if (!autoRestoreEnabled || !hasTransformed || isRawRestored) return
+        if (!VietnamesePhonotactics.isValidVietnamesePrefix(
+                buffer, bufferLength, allowVniIntermediates = true
+            )
+        ) {
+            restoreRawKeys()
+        }
+    }
+
+    private fun restoreRawKeys() {
+        val len = rawLength.coerceAtMost(MAX_WORD_LENGTH)
+        for (i in 0 until len) {
+            buffer[i] = rawKeys[i]
+        }
+        bufferLength = len
+        currentTone = VietnameseCharMap.TONE_NONE
+        lastToneKey = '\u0000'
+        isRawRestored = true
+    }
+
+    private fun removeLastMatchingRawKey(deletedChar: Char) {
+        if (rawLength <= 0) return
+        val targetBase = baseAsciiLower(deletedChar)
+        for (i in rawLength - 1 downTo 0) {
+            if (rawKeys[i].lowercaseChar() == targetBase) {
+                for (j in i until rawLength - 1) {
+                    rawKeys[j] = rawKeys[j + 1]
+                }
+                rawLength--
+                return
+            }
+        }
+        rawLength--
+    }
+
+    private fun baseAsciiLower(c: Char): Char {
+        if (c == 'đ' || c == 'Đ') return 'd'
+        val row = VietnameseCharMap.getVowelRow(c)
+        return when (row) {
+            0, 1, 2 -> 'a'
+            3, 4 -> 'e'
+            5 -> 'i'
+            6, 7, 8 -> 'o'
+            9, 10 -> 'u'
+            11 -> 'y'
+            else -> c.lowercaseChar()
+        }
+    }
+
+    private fun recalcHasTransformed() {
+        hasTransformed = false
+        for (i in 0 until bufferLength) {
+            val ch = buffer[i]
+            if (ch == 'đ' || ch == 'Đ') {
+                hasTransformed = true
+                return
+            }
+            if (VietnameseCharMap.getCharTone(ch) != VietnameseCharMap.TONE_NONE) {
+                hasTransformed = true
+                return
+            }
+            val row = VietnameseCharMap.getVowelRow(ch)
+            if (row == 1 || row == 2 || row == 4 || row == 7 || row == 8 || row == 10) {
+                hasTransformed = true
+                return
+            }
+        }
     }
 
     private fun appendChar(c: Char) {

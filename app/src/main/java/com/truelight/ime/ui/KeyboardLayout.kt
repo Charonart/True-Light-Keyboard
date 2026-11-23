@@ -25,6 +25,8 @@ class KeyboardLayout(private val theme: KeyboardTheme) {
     var showNumberRow = false
     var showSubLabels = true
     var showEmojiKey = false
+    var showCommaKey = true
+    var showPeriodKey = true
 
     var activeLanguage: LanguageSpec = LanguageRegistry.EN_US
         private set
@@ -71,14 +73,20 @@ class KeyboardLayout(private val theme: KeyboardTheme) {
     fun setDisplayOptions(
         numberRow: Boolean,
         subLabels: Boolean,
-        emojiKey: Boolean = false
+        emojiKey: Boolean = false,
+        commaKey: Boolean = true,
+        periodKey: Boolean = true
     ) {
         val numberRowChanged = (this.showNumberRow != numberRow)
         val emojiKeyChanged = (this.showEmojiKey != emojiKey)
+        val commaKeyChanged = (this.showCommaKey != commaKey)
+        val periodKeyChanged = (this.showPeriodKey != periodKey)
         this.showNumberRow = numberRow
         this.showSubLabels = subLabels
         this.showEmojiKey = emojiKey
-        if (numberRowChanged || emojiKeyChanged) {
+        this.showCommaKey = commaKey
+        this.showPeriodKey = periodKey
+        if (numberRowChanged || emojiKeyChanged || commaKeyChanged || periodKeyChanged) {
             buildAlphaKeys()
             if (emojiKeyChanged) {
                 buildSymbolKeys()
@@ -158,15 +166,19 @@ class KeyboardLayout(private val theme: KeyboardTheme) {
         }
         alphaKeys.add(KeyModel(code = KeyModel.CODE_DELETE, label = "⌫", type = KeyModel.TYPE_DELETE))
 
-        // Row 3 (5 clean symmetrical keys by default, or 6 with optional Emoji key):
-        // ?123, [optional Emoji], Comma, Space, Period, Enter
+        // Row 3 (100% configurable):
+        // ?123, [optional Emoji], [optional Comma], Space, [optional Period], Enter
         alphaKeys.add(KeyModel(code = KeyModel.CODE_SWITCH_SYMBOLS, label = "?123", type = KeyModel.TYPE_SWITCH_SYMBOLS))
         if (showEmojiKey) {
             alphaKeys.add(KeyModel(code = KeyModel.CODE_EMOJI, label = "", type = KeyModel.TYPE_EMOJI))
         }
-        alphaKeys.add(KeyModel(code = ','.code, label = ",", subLabel = "!", type = KeyModel.TYPE_NORMAL))
+        if (showCommaKey) {
+            alphaKeys.add(KeyModel(code = ','.code, label = ",", subLabel = "!", type = KeyModel.TYPE_NORMAL))
+        }
         alphaKeys.add(KeyModel(code = KeyModel.CODE_SPACE, label = buildSpaceLabel(), type = KeyModel.TYPE_SPACE))
-        alphaKeys.add(KeyModel(code = '.'.code, label = ".", subLabel = "?", type = KeyModel.TYPE_NORMAL))
+        if (showPeriodKey) {
+            alphaKeys.add(KeyModel(code = '.'.code, label = ".", subLabel = "?", type = KeyModel.TYPE_NORMAL))
+        }
         alphaKeys.add(KeyModel(code = KeyModel.CODE_ENTER, label = "↵", type = KeyModel.TYPE_ENTER))
     }
 
@@ -321,16 +333,29 @@ class KeyboardLayout(private val theme: KeyboardTheme) {
         alphaKeys[idx++].bounds.set(x, y, x + specialW, y + rowHeight - mv * 2) // Del
         curRow++
 
-        // Row 3: ?123 (1.35x), [optional Emoji 0.9x], ',' (0.9x), Space (~4.9x / ~4.0x), '.' (0.9x), Enter (1.45x)
+        // Row 3 (100% dynamic): ?123, [optional Emoji], [optional ,], Space (fills remaining width), [optional .], Enter
         y = topOffset + curRow * rowHeight + mv
         val sideKeyW = kw10 * 1.35f
         val emojiKeyW = kw10 * 0.9f
         val punctW = kw10 * 0.9f
         val enterW = kw10 * 1.45f
-        val row3KeyCount = if (showEmojiKey) 6 else 5
-        val emojiSlotW = if (showEmojiKey) emojiKeyW else 0f
+
+        var fixedW = sideKeyW + enterW
+        var row3KeyCount = 3 // ?123, Space, Enter
+        if (showEmojiKey) {
+            fixedW += emojiKeyW
+            row3KeyCount++
+        }
+        if (showCommaKey) {
+            fixedW += punctW
+            row3KeyCount++
+        }
+        if (showPeriodKey) {
+            fixedW += punctW
+            row3KeyCount++
+        }
         val spaceW = (
-            width - (sideKeyW + emojiSlotW + punctW * 2f + enterW + mh * (row3KeyCount * 2f))
+            width - (fixedW + mh * (row3KeyCount * 2f))
         ).coerceAtLeast(kw10 * 2f)
 
         x = mh
@@ -340,12 +365,16 @@ class KeyboardLayout(private val theme: KeyboardTheme) {
             alphaKeys[idx++].bounds.set(x, y, x + emojiKeyW, y + rowHeight - mv * 2) // Emoji
             x += emojiKeyW + mh * 2
         }
-        alphaKeys[idx++].bounds.set(x, y, x + punctW, y + rowHeight - mv * 2) // ,
-        x += punctW + mh * 2
+        if (showCommaKey) {
+            alphaKeys[idx++].bounds.set(x, y, x + punctW, y + rowHeight - mv * 2) // ,
+            x += punctW + mh * 2
+        }
         alphaKeys[idx++].bounds.set(x, y, x + spaceW, y + rowHeight - mv * 2) // Space
         x += spaceW + mh * 2
-        alphaKeys[idx++].bounds.set(x, y, x + punctW, y + rowHeight - mv * 2) // .
-        x += punctW + mh * 2
+        if (showPeriodKey) {
+            alphaKeys[idx++].bounds.set(x, y, x + punctW, y + rowHeight - mv * 2) // .
+            x += punctW + mh * 2
+        }
         alphaKeys[idx].bounds.set(x, y, x + enterW, y + rowHeight - mv * 2) // Enter
     }
 

@@ -13,6 +13,7 @@ import android.view.WindowInsetsController
 import android.view.inputmethod.EditorInfo
 import com.truelight.ime.bridge.InputConnectionBroker
 import com.truelight.ime.clipboard.ClipboardHistoryManager
+import com.truelight.ime.config.KeyboardConfig
 import com.truelight.ime.config.KeyboardPrefs
 import com.truelight.ime.config.PrefsProvider
 import com.truelight.ime.engine.InputEngine
@@ -177,8 +178,13 @@ class TrueLightIME : InputMethodService(),
             KeyboardPrefs.KEY_AUTO_CAPS -> {
                 updateAutoCaps()
             }
-            KeyboardPrefs.KEY_DOUBLE_SPACE_PERIOD -> {
-                // Read dynamically on Space press; no layout rebuild needed
+            KeyboardPrefs.KEY_VI_MODERN_TONE,
+            KeyboardPrefs.KEY_VI_AUTO_RESTORE -> {
+                loadLanguageAndSuggestions()
+            }
+            KeyboardPrefs.KEY_DOUBLE_SPACE_PERIOD,
+            KeyboardPrefs.KEY_SMART_PUNCTUATION -> {
+                // Read dynamically on key press; no layout rebuild needed
             }
             else -> {
                 loadLanguageAndSuggestions()
@@ -213,15 +219,22 @@ class TrueLightIME : InputMethodService(),
     private fun loadLanguageAndSuggestions() {
         val langSpec = LanguageRegistry.getById(prefs.activeLanguageId)
         val modernTone = prefs.vietnameseModernTone
+        val viAutoRestore = prefs.viAutoRestoreEnabled
 
         if (langSpec.id != activeLanguage.id) {
             activeLanguage = langSpec
-            activeEngine = langSpec.createEngine(modernTone)
+            activeEngine = langSpec.createEngine(modernTone, viAutoRestore)
         } else {
-            // Update Vietnamese tone placement dynamically if toggled in Settings
+            // Update Vietnamese tone placement & auto-restore dynamically if toggled in Settings
             when (val eng = activeEngine) {
-                is com.truelight.ime.engine.TelexFsmEngine -> eng.modernTonePlacement = modernTone
-                is com.truelight.ime.engine.VniFsmEngine -> eng.modernTonePlacement = modernTone
+                is com.truelight.ime.engine.TelexFsmEngine -> {
+                    eng.modernTonePlacement = modernTone
+                    eng.autoRestoreEnabled = viAutoRestore
+                }
+                is com.truelight.ime.engine.VniFsmEngine -> {
+                    eng.modernTonePlacement = modernTone
+                    eng.autoRestoreEnabled = viAutoRestore
+                }
             }
         }
 
@@ -234,8 +247,7 @@ class TrueLightIME : InputMethodService(),
 
     private fun applySettingsToView() {
         val view = keyboardView ?: return
-        view.applyConfig(
-            context = this,
+        val config = KeyboardConfig(
             themeMode = prefs.themeMode,
             customCssEnabled = prefs.customCssEnabled,
             customCss = prefs.customCss,
@@ -243,13 +255,25 @@ class TrueLightIME : InputMethodService(),
             showNumberRow = prefs.showNumberRow,
             showSubLabels = prefs.showSubLabels,
             longPressSymbols = prefs.longPressSymbols,
-            haptic = prefs.hapticEnabled,
-            languageSpec = activeLanguage,
-            multipleLanguages = prefs.enabledLanguages.size > 1,
+            keyPopupEnabled = prefs.keyPopupEnabled,
+            keypressAnimation = prefs.keypressAnimationEnabled,
+            showTopUtilityBar = prefs.showTopUtilityBar,
+            emojiButtonMode = prefs.emojiButtonMode,
+            showSettingsKey = prefs.showSettingsKey,
+            showCommaKey = prefs.showCommaKey,
+            showPeriodKey = prefs.showPeriodKey,
             longPressEnterAction = prefs.longPressEnterAction,
-            showEmojiKey = prefs.showEmojiKey,
-            keypressAnimation = prefs.keypressAnimationEnabled
+            longPressDelayMs = prefs.longPressDelayMs,
+            spaceCursorGlide = prefs.spaceCursorGlideEnabled,
+            spaceLongPressLang = prefs.spaceLongPressLangEnabled,
+            swipeDeleteWord = prefs.swipeDeleteWordEnabled,
+            hapticEnabled = prefs.hapticEnabled,
+            hapticStrength = prefs.hapticStrength,
+            soundEnabled = prefs.soundEnabled,
+            languageSpec = activeLanguage,
+            multipleLanguages = prefs.enabledLanguages.size > 1
         )
+        view.applyConfig(this, config)
         updateNavigationBarColor()
     }
 
@@ -326,7 +350,7 @@ class TrueLightIME : InputMethodService(),
                         suggestionManager.updateForWord(retry.text)
                     }
                 } else {
-                    broker.commitCharWithSmartPunctuation(c)
+                    broker.commitCharWithSmartPunctuation(c, prefs.smartPunctuationEnabled)
                 }
             } else {
                 val composingActive = broker.setComposingText(result.text, 1)
@@ -345,7 +369,7 @@ class TrueLightIME : InputMethodService(),
                 suggestionManager.learnCommittedWord(typed)
             }
             suggestionManager.clearSuggestions()
-            broker.commitCharWithSmartPunctuation(c)
+            broker.commitCharWithSmartPunctuation(c, prefs.smartPunctuationEnabled)
         }
         keyboardView?.invalidate()
     }

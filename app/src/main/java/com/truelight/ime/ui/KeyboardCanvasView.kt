@@ -8,20 +8,25 @@ import android.graphics.Paint
 import android.graphics.Path
 import android.graphics.Rect
 import android.graphics.RectF
+import android.media.AudioManager
 import android.net.Uri
+import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
+import android.os.VibrationEffect
+import android.os.Vibrator
+import android.os.VibratorManager
 import android.view.HapticFeedbackConstants
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewConfiguration
 import android.view.inputmethod.EditorInfo
 import com.truelight.ime.clipboard.ClipboardHistoryManager
+import com.truelight.ime.config.KeyboardConfig
 import com.truelight.ime.config.KeyboardPrefs
 import com.truelight.ime.emoji.EmojiCanvasPanel
 import com.truelight.ime.emoji.EmojiHistoryManager
-import com.truelight.ime.lang.LanguageSpec
 import com.truelight.ime.suggest.SuggestionManager
 import com.truelight.ime.ui.theme.KeyboardTheme
 import kotlin.math.PI
@@ -83,7 +88,7 @@ class KeyboardCanvasView(context: Context) : View(context) {
 
         private const val ANIM_BUFFER_SIZE = 8
         private const val ANIM_DURATION_MS = 95L
-        private const val ENTER_POPUP_LONG_PRESS_MS = 340L
+        private const val MAX_ACCENT_VARIANTS = 12
     }
 
     var actionListener: OnKeyboardActionListener? = null
@@ -122,9 +127,56 @@ class KeyboardCanvasView(context: Context) : View(context) {
 
     var keyboardHeightDp: Int = KeyboardPrefs.DEFAULT_HEIGHT_DP
     var hapticEnabled: Boolean = true
+    var hapticStrength: Int = KeyboardPrefs.HAPTIC_MEDIUM
+    var soundEnabled: Boolean = false
     var longPressSymbolsEnabled: Boolean = true
-    var longPressEnterAction: Int = KeyboardPrefs.ENTER_LONG_PRESS_POPUP
+    var keyPopupEnabled: Boolean = true
     var keypressAnimationEnabled: Boolean = true
+    var showTopUtilityBar: Boolean = true
+    var emojiButtonMode: Int = KeyboardPrefs.EMOJI_BTN_TOP_BAR
+    var showSettingsKey: Boolean = true
+    var longPressEnterAction: Int = KeyboardPrefs.ENTER_LONG_PRESS_POPUP
+    var longPressDelayMs: Long = 340L
+    var spaceCursorGlideEnabled: Boolean = true
+    var spaceLongPressLangEnabled: Boolean = true
+    var swipeDeleteWordEnabled: Boolean = true
+
+    // Cached system services & preallocated VibrationEffects (zero allocation per keypress)
+    private val vibrator: Vibrator? by lazy {
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                val vm = context.getSystemService(Context.VIBRATOR_MANAGER_SERVICE) as? VibratorManager
+                vm?.defaultVibrator
+            } else {
+                @Suppress("DEPRECATION")
+                context.getSystemService(Context.VIBRATOR_SERVICE) as? Vibrator
+            }
+        } catch (_: Throwable) {
+            null
+        }
+    }
+    private val audioManager: AudioManager? by lazy {
+        try {
+            context.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
+        } catch (_: Throwable) {
+            null
+        }
+    }
+    private val hapticEffectLight: VibrationEffect? = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+        VibrationEffect.createOneShot(8L, 50)
+    } else {
+        null
+    }
+    private val hapticEffectMedium: VibrationEffect? = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+        VibrationEffect.createOneShot(14L, 120)
+    } else {
+        null
+    }
+    private val hapticEffectStrong: VibrationEffect? = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+        VibrationEffect.createOneShot(22L, 220)
+    } else {
+        null
+    }
 
     private val stripHeightPx: Float = 38f * density
     private val stripSideBtnWidthPx: Float = 44f * density
@@ -153,6 +205,17 @@ class KeyboardCanvasView(context: Context) : View(context) {
     private var enterPopupSelectedOption: Int = 0
     private var enterPopupCenterX: Float = 0f
     private val enterPopupRect = RectF()
+
+    // Accented character long-press horizontal floating pill state (preallocated -> 0 allocs in onDraw)
+    private val accentPopupChars = arrayOfNulls<String>(MAX_ACCENT_VARIANTS)
+    private var accentPopupCount: Int = 0
+    private var isAccentPopupActive: Boolean = false
+    private var accentPopupSlot: Int = -1
+    private var accentPopupSelectedIndex: Int = 0
+    private var accentPopupCellWidth: Float = 0f
+    private var accentPopupAnchorX: Float = 0f
+    private var accentPopupDragged: Boolean = false
+    private val accentPopupRect = RectF()
 
     // Preallocated multi-touch tracking arrays (zero allocations during typing)
     private val pointerIds = IntArray(MAX_POINTERS) { -1 }
@@ -192,6 +255,7 @@ class KeyboardCanvasView(context: Context) : View(context) {
             ) {
                 actionListener?.onBackspace()
                 triggerHaptic()
+                playKeySound(KeyModel.TYPE_DELETE)
                 mainHandler.postDelayed(this, 50L)
             }
         }
@@ -226,7 +290,7 @@ class KeyboardCanvasView(context: Context) : View(context) {
             }
 
             if (key.type == KeyModel.TYPE_SPACE) {
-                if (!spaceGlideActive && layout.hasMultipleLanguages) {
+                if (spaceLongPressLangEnabled && !spaceGlideActive && layout.hasMultipleLanguages) {
                     pointerLongPressConsumed[slot] = true
                     longPressSlot = -1
                     if (spaceSlot == slot) {
@@ -253,9 +317,18 @@ class KeyboardCanvasView(context: Context) : View(context) {
                 return
             }
 
-            if (longPressSymbolsEnabled && key.type == KeyModel.TYPE_NORMAL) {
+            if (longPressSymbolsEnabled && key.type == KeyModel.TYPE_NORMAL && layout.currentMode == KeyboardLayout.Mode.ALPHA) {
+                val variants = getAccentVariantsForKey(key)
+                if (!variants.isNullOrEmpty()) {
+                    pointerLongPressConsumed[slot] = true
+                    longPressSlot = -1
+                    activateAccentPopup(key, slot, variants, pointerDownX[slot])
+                    triggerHaptic()
+                    invalidate()
+                    return
+                }
                 val sub = key.subLabel
-                if (!sub.isNullOrEmpty() && layout.currentMode == KeyboardLayout.Mode.ALPHA) {
+                if (!sub.isNullOrEmpty()) {
                     pointerLongPressConsumed[slot] = true
                     popupLongPressTriggered = true
                     longPressSlot = -1
@@ -300,6 +373,7 @@ class KeyboardCanvasView(context: Context) : View(context) {
             onBackToKeyboard = { setEmojiMode(false) },
             onDeleteClicked = {
                 triggerHaptic()
+                playKeySound(KeyModel.TYPE_DELETE)
                 actionListener?.onBackspace()
             },
             onRequestInvalidate = { postInvalidateOnAnimation() }
@@ -311,34 +385,39 @@ class KeyboardCanvasView(context: Context) : View(context) {
         return panel
     }
 
-    fun applyConfig(
-        context: Context,
-        themeMode: Int,
-        customCssEnabled: Boolean,
-        customCss: String,
-        heightDp: Int,
-        showNumberRow: Boolean,
-        showSubLabels: Boolean,
-        longPressSymbols: Boolean,
-        haptic: Boolean,
-        languageSpec: LanguageSpec,
-        multipleLanguages: Boolean,
-        longPressEnterAction: Int = KeyboardPrefs.ENTER_LONG_PRESS_POPUP,
-        showEmojiKey: Boolean = false,
-        keypressAnimation: Boolean = true
-    ) {
-        theme.applyTheme(context, themeMode, customCssEnabled, customCss)
+    fun applyConfig(context: Context, config: KeyboardConfig) {
+        theme.applyTheme(context, config.themeMode, config.customCssEnabled, config.customCss)
         emojiPanel?.syncThemeColors()
-        keyboardHeightDp = heightDp
-        hapticEnabled = haptic
-        longPressSymbolsEnabled = longPressSymbols
-        this.longPressEnterAction = longPressEnterAction
-        keypressAnimationEnabled = keypressAnimation
+        keyboardHeightDp = config.heightDp
+        hapticEnabled = config.hapticEnabled
+        hapticStrength = config.hapticStrength
+        soundEnabled = config.soundEnabled
+        longPressSymbolsEnabled = config.longPressSymbols
+        keyPopupEnabled = config.keyPopupEnabled
+        keypressAnimationEnabled = config.keypressAnimation
+        showTopUtilityBar = config.showTopUtilityBar
+        emojiButtonMode = config.emojiButtonMode
+        showSettingsKey = config.showSettingsKey
+        longPressEnterAction = config.longPressEnterAction
+        longPressDelayMs = config.longPressDelayMs
+            .coerceIn(KeyboardPrefs.MIN_LONG_PRESS_MS, KeyboardPrefs.MAX_LONG_PRESS_MS)
+            .toLong()
+        spaceCursorGlideEnabled = config.spaceCursorGlide
+        spaceLongPressLangEnabled = config.spaceLongPressLang
+        swipeDeleteWordEnabled = config.swipeDeleteWord
+
         if (!keypressAnimationEnabled) {
             clearKeyAnimations()
         }
-        layout.setDisplayOptions(showNumberRow, showSubLabels, showEmojiKey)
-        layout.setLanguage(languageSpec, multipleLanguages)
+        val showBottomEmoji = (config.emojiButtonMode == KeyboardPrefs.EMOJI_BTN_BOTTOM_ROW)
+        layout.setDisplayOptions(
+            numberRow = config.showNumberRow,
+            subLabels = config.showSubLabels,
+            emojiKey = showBottomEmoji,
+            commaKey = config.showCommaKey,
+            periodKey = config.showPeriodKey
+        )
+        layout.setLanguage(config.languageSpec, config.multipleLanguages)
         requestLayout()
         if (width > 0 && height > 0) {
             remeasureInternal(width, height)
@@ -386,6 +465,48 @@ class KeyboardCanvasView(context: Context) : View(context) {
         enterPopupSelectedOption = 0
         enterPopupSlot = slot
         isEnterPopupActive = true
+    }
+
+    private fun getAccentVariantsForKey(key: KeyModel): Array<String>? {
+        if (key.code <= 0) return null
+        val baseChar = key.code.toChar().lowercaseChar()
+        val variants = layout.activeLanguage.accentPopupMap[baseChar]
+        return if (variants != null && variants.isNotEmpty()) variants else null
+    }
+
+    private fun activateAccentPopup(key: KeyModel, slot: Int, variants: Array<String>, anchorX: Float) {
+        val count = minOf(variants.size, MAX_ACCENT_VARIANTS)
+        if (count <= 0) return
+        val uppercase = layout.isShifted || layout.isCapsLock
+        for (i in 0 until count) {
+            val raw = variants[i]
+            accentPopupChars[i] = if (uppercase) raw.uppercase() else raw
+        }
+        for (i in count until MAX_ACCENT_VARIANTS) {
+            accentPopupChars[i] = null
+        }
+
+        val kb = key.bounds
+        val rawCellW = maxOf(kb.width() * 0.98f, 36f * density)
+        val maxPillW = (width - 8f * density).coerceAtLeast(36f * density)
+        val cellW = minOf(rawCellW, maxPillW / count.toFloat())
+        val popW = cellW * count.toFloat()
+        val popH = maxOf(kb.height() * 1.04f, 44f * density)
+
+        val maxLeft = (width - popW - 4f * density).coerceAtLeast(4f * density)
+        val idealLeft = kb.centerX() - cellW * 0.5f
+        val left = idealLeft.coerceIn(4f * density, maxLeft)
+        val bottom = kb.top - 8f * density
+        val top = (bottom - popH).coerceAtLeast(2f * density)
+
+        accentPopupRect.set(left, top, left + popW, top + popH)
+        accentPopupCellWidth = cellW
+        accentPopupCount = count
+        accentPopupSelectedIndex = 0
+        accentPopupAnchorX = anchorX
+        accentPopupDragged = false
+        accentPopupSlot = slot
+        isAccentPopupActive = true
     }
 
     private fun recordKeyReleaseAnim(key: KeyModel) {
@@ -462,10 +583,14 @@ class KeyboardCanvasView(context: Context) : View(context) {
         }
     }
 
+    private fun hasStripSpace(): Boolean {
+        if (layout.currentMode == KeyboardLayout.Mode.NUMPAD) return false
+        return (suggestionManager?.isStripVisible() == true) || showTopUtilityBar
+    }
+
     fun shouldShowSuggestionStrip(): Boolean {
         if (isEmojiMode || isClipboardOpen) return false
-        if (layout.currentMode == KeyboardLayout.Mode.NUMPAD) return false
-        return suggestionManager?.isStripVisible() == true
+        return hasStripSpace()
     }
 
     override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
@@ -477,9 +602,7 @@ class KeyboardCanvasView(context: Context) : View(context) {
 
         // Keep identical height across ALPHA, SYMBOLS, SYMBOLS_SHIFT, Emoji & Clipboard (no vertical jumping)
         val extraNumRowDp = if (layout.showNumberRow && layout.currentMode != KeyboardLayout.Mode.NUMPAD) 36 else 0
-        val showStripSpace = layout.currentMode != KeyboardLayout.Mode.NUMPAD &&
-            (suggestionManager?.isStripVisible() == true)
-        val stripDp = if (showStripSpace) 38 else 0
+        val stripDp = if (hasStripSpace()) 38 else 0
         val desiredHeight = ((keyboardHeightDp + extraNumRowDp + stripDp) * density).toInt()
 
         val height = if (MeasureSpec.getMode(heightMeasureSpec) == MeasureSpec.EXACTLY) {
@@ -639,10 +762,12 @@ class KeyboardCanvasView(context: Context) : View(context) {
             }
         }
 
-        // 4. Draw Enter Long-Press 2-Option Floating Mini-Popup OR Key Preview Popup (zero-allocation)
+        // 4. Draw Enter Popup, Accent Popup, OR Key Preview Popup (100% zero-allocation)
         if (isEnterPopupActive) {
             drawEnterPopup(canvas, hasShadow, hasBorder)
-        } else {
+        } else if (isAccentPopupActive) {
+            drawAccentPopup(canvas, hasShadow, hasBorder)
+        } else if (keyPopupEnabled) {
             val activeKey = activePopupKey
             if (activeKey != null && activeKey.isPressed && activeKey.type == KeyModel.TYPE_NORMAL) {
                 drawKeyPreviewPopup(canvas, activeKey, radius)
@@ -940,6 +1065,53 @@ class KeyboardCanvasView(context: Context) : View(context) {
         drawNewlineIcon(canvas, rightCx, cy, newlineS, rightStroke)
     }
 
+    private fun drawAccentPopup(canvas: Canvas, hasShadow: Boolean, hasBorder: Boolean) {
+        val count = accentPopupCount
+        if (count <= 0) return
+
+        val pillRadius = 12f * density
+        if (hasShadow) {
+            theme.reusableRectF.set(
+                accentPopupRect.left,
+                accentPopupRect.top + 2f * density,
+                accentPopupRect.right,
+                accentPopupRect.bottom + 2f * density
+            )
+            canvas.drawRoundRect(theme.reusableRectF, pillRadius, pillRadius, theme.keyShadowPaint)
+        }
+
+        // Outer rounded pill container
+        canvas.drawRoundRect(accentPopupRect, pillRadius, pillRadius, theme.popupBgPaint)
+        if (hasBorder) {
+            canvas.drawRoundRect(accentPopupRect, pillRadius, pillRadius, theme.keyBorderPaint)
+        }
+
+        // Active cell highlight pill
+        val inset = 3.5f * density
+        val innerRadius = (pillRadius - inset * 0.7f).coerceAtLeast(4f * density)
+        val cellW = accentPopupCellWidth
+        val selIdx = accentPopupSelectedIndex.coerceIn(0, count - 1)
+        val selLeft = accentPopupRect.left + selIdx * cellW + inset * 0.6f
+        val selRight = accentPopupRect.left + (selIdx + 1) * cellW - inset * 0.6f
+        theme.reusableRectF.set(
+            selLeft,
+            accentPopupRect.top + inset,
+            selRight,
+            accentPopupRect.bottom - inset
+        )
+        canvas.drawRoundRect(theme.reusableRectF, innerRadius, innerRadius, theme.accentPaint)
+
+        // Draw each accented character cleanly (zero allocations)
+        val cy = accentPopupRect.centerY()
+        for (i in 0 until count) {
+            val ch = accentPopupChars[i] ?: continue
+            val cellCx = accentPopupRect.left + cellW * (i + 0.5f)
+            val paint = if (i == selIdx) theme.textOnAccentPaint else theme.textPrimaryPaint
+            val baseline = cy - (paint.descent() + paint.ascent()) * 0.5f
+            canvas.drawText(ch, cellCx, baseline, paint)
+        }
+    }
+
     private fun drawImagePlaceholderIcon(canvas: Canvas, cx: Float, cy: Float, r: Float, paint: Paint) {
         theme.reusableRectF.set(cx - r * 0.9f, cy - r * 0.72f, cx + r * 0.9f, cy + r * 0.72f)
         canvas.drawRoundRect(theme.reusableRectF, 2f * density, 2f * density, paint)
@@ -1028,14 +1200,22 @@ class KeyboardCanvasView(context: Context) : View(context) {
         canvas.drawRect(0f, 0f, w, h, theme.stripBgPaint)
         canvas.drawRect(0f, h - density, w, h, theme.stripDividerPaint)
 
-        val sm = suggestionManager ?: return
-        val count = sm.activeSlotCount
+        val sm = suggestionManager
+        val count = sm?.activeSlotCount ?: 0
         if (count <= 0) {
-            // Idle utility bar:
-            // [0..44dp] Clipboard | [44..88dp] Monochrome Emoji | Center: Language name | [w-92..w-44dp] EN/VI pill (multi-lang) | [w-44..w] Settings Gear
+            if (!showTopUtilityBar) {
+                // Ultra-clean minimal blank strip when idle (prevents height jumping while typing)
+                return
+            }
+            // Idle utility bar (100% configurable):
+            // [0..44dp] Clipboard | [optional 44..88dp] Emoji | Center: Language | [optional EN/VI pill] | [optional Settings Gear]
             val btnW = stripSideBtnWidthPx
             val cy = h * 0.5f
             val hasBorder = theme.keyBorderWidth > 0f && (theme.colorKeyBorder ushr 24) > 0
+            val showTopEmoji = (emojiButtonMode == KeyboardPrefs.EMOJI_BTN_TOP_BAR)
+            val leftReserved = if (showTopEmoji) btnW * 2f else btnW
+            val settingsW = if (showSettingsKey) btnW else 0f
+            val rightReserved = settingsW + (if (layout.hasMultipleLanguages) stripLangBtnWidthPx else 0f)
 
             // 1. Far-left slot (0..44dp): Clipboard icon
             if (pressedStripAction == STRIP_ACTION_CLIPBOARD) {
@@ -1046,26 +1226,29 @@ class KeyboardCanvasView(context: Context) : View(context) {
                 canvas.drawCircle(btnW * 0.5f + 7.5f * density, cy - 7.5f * density, 2.2f * density, theme.accentPaint)
             }
 
-            // 2. Second-left slot (44..88dp): Monochrome Emoji vector smiley
-            if (pressedStripAction == STRIP_ACTION_EMOJI) {
-                canvas.drawRect(btnW, 0f, btnW * 2f, h - density, theme.keyPressedPaint)
+            // 2. Optional second-left slot (44..88dp): Monochrome Emoji vector smiley
+            if (showTopEmoji) {
+                if (pressedStripAction == STRIP_ACTION_EMOJI) {
+                    canvas.drawRect(btnW, 0f, btnW * 2f, h - density, theme.keyPressedPaint)
+                }
+                val prevFillColor = theme.iconFillPaint.color
+                theme.iconFillPaint.color = theme.colorTextSecondary
+                drawEmojiSmileyIcon(canvas, btnW * 1.5f, cy, 8.5f * density, theme.iconSecondaryPaint, theme.iconFillPaint)
+                theme.iconFillPaint.color = prevFillColor
             }
-            val prevFillColor = theme.iconFillPaint.color
-            theme.iconFillPaint.color = theme.colorTextSecondary
-            drawEmojiSmileyIcon(canvas, btnW * 1.5f, cy, 8.5f * density, theme.iconSecondaryPaint, theme.iconFillPaint)
-            theme.iconFillPaint.color = prevFillColor
 
-            // 3. Far-right slot (w-44dp..w): Settings gear
-            if (pressedStripAction == STRIP_ACTION_SETTINGS) {
-                canvas.drawRect(w - btnW, 0f, w, h - density, theme.keyPressedPaint)
+            // 3. Optional far-right slot: Settings gear
+            if (showSettingsKey) {
+                if (pressedStripAction == STRIP_ACTION_SETTINGS) {
+                    canvas.drawRect(w - btnW, 0f, w, h - density, theme.keyPressedPaint)
+                }
+                drawGearIcon(canvas, w - btnW * 0.5f, cy, 8.5f * density, theme.iconSecondaryPaint)
             }
-            drawGearIcon(canvas, w - btnW * 0.5f, cy, 8.5f * density, theme.iconSecondaryPaint)
 
-            // 4. Second-right slot (w-92dp..w-44dp): Compact EN/VI/KO language pill (only when multiple languages enabled)
-            val rightReserved = if (layout.hasMultipleLanguages) btnW + stripLangBtnWidthPx else btnW
+            // 4. Optional language pill (only when multiple languages enabled)
             if (layout.hasMultipleLanguages) {
                 val pillSlotLeft = w - rightReserved
-                val pillSlotRight = w - btnW
+                val pillSlotRight = w - settingsW
                 val pillCx = (pillSlotLeft + pillSlotRight) * 0.5f
                 val pillW = 34f * density
                 val pillH = 22f * density
@@ -1085,7 +1268,7 @@ class KeyboardCanvasView(context: Context) : View(context) {
             }
 
             // 5. Center: Active language name (tappable to cycle when multiple languages enabled)
-            val centerLeft = btnW * 2f
+            val centerLeft = leftReserved
             val centerRight = w - rightReserved
             if (centerRight > centerLeft + 24f * density) {
                 if (pressedStripAction == STRIP_ACTION_LANG_CENTER && layout.hasMultipleLanguages) {
@@ -1113,6 +1296,7 @@ class KeyboardCanvasView(context: Context) : View(context) {
             }
             return
         }
+        if (sm == null) return
 
         val slotW = w / 3f
         val padV = 7f * density
@@ -1671,6 +1855,7 @@ class KeyboardCanvasView(context: Context) : View(context) {
             activePopupKey = key
         }
         triggerHaptic()
+        playKeySound(key.type)
 
         when (key.type) {
             KeyModel.TYPE_DELETE -> {
@@ -1685,10 +1870,10 @@ class KeyboardCanvasView(context: Context) : View(context) {
                 spaceSlot = slot
                 spaceGlideActive = false
                 spaceLastStepX = px
-                if (layout.hasMultipleLanguages) {
+                if (spaceLongPressLangEnabled && layout.hasMultipleLanguages) {
                     mainHandler.removeCallbacks(longPressRunnable)
                     longPressSlot = slot
-                    mainHandler.postDelayed(longPressRunnable, 360L)
+                    mainHandler.postDelayed(longPressRunnable, longPressDelayMs)
                 }
             }
 
@@ -1707,12 +1892,7 @@ class KeyboardCanvasView(context: Context) : View(context) {
                 if (longPressEnterAction != KeyboardPrefs.ENTER_LONG_PRESS_NONE) {
                     mainHandler.removeCallbacks(longPressRunnable)
                     longPressSlot = slot
-                    val delayMs = if (longPressEnterAction == KeyboardPrefs.ENTER_LONG_PRESS_POPUP) {
-                        ENTER_POPUP_LONG_PRESS_MS
-                    } else {
-                        360L
-                    }
-                    mainHandler.postDelayed(longPressRunnable, delayMs)
+                    mainHandler.postDelayed(longPressRunnable, longPressDelayMs)
                 }
             }
 
@@ -1720,17 +1900,18 @@ class KeyboardCanvasView(context: Context) : View(context) {
             KeyModel.TYPE_SWITCH_LANG -> {
                 mainHandler.removeCallbacks(longPressRunnable)
                 longPressSlot = slot
-                mainHandler.postDelayed(longPressRunnable, 360L)
+                mainHandler.postDelayed(longPressRunnable, longPressDelayMs)
             }
 
             KeyModel.TYPE_NORMAL -> {
-                if (longPressSymbolsEnabled &&
-                    !key.subLabel.isNullOrEmpty() &&
-                    layout.currentMode == KeyboardLayout.Mode.ALPHA
-                ) {
-                    mainHandler.removeCallbacks(longPressRunnable)
-                    longPressSlot = slot
-                    mainHandler.postDelayed(longPressRunnable, 360L)
+                if (longPressSymbolsEnabled && layout.currentMode == KeyboardLayout.Mode.ALPHA) {
+                    val hasAccents = getAccentVariantsForKey(key) != null
+                    val hasSub = !key.subLabel.isNullOrEmpty()
+                    if (hasAccents || hasSub) {
+                        mainHandler.removeCallbacks(longPressRunnable)
+                        longPressSlot = slot
+                        mainHandler.postDelayed(longPressRunnable, longPressDelayMs)
+                    }
                 }
             }
         }
@@ -1762,25 +1943,45 @@ class KeyboardCanvasView(context: Context) : View(context) {
                 continue
             }
 
+            // 0b. Accented Character Long-Press Floating Pill horizontal selector
+            if (isAccentPopupActive && slot == accentPopupSlot && accentPopupCount > 0) {
+                if (!accentPopupDragged && abs(px - accentPopupAnchorX) > 6f * density) {
+                    accentPopupDragged = true
+                }
+                if (accentPopupDragged && accentPopupCellWidth > 0f) {
+                    val nextIdx = ((px - accentPopupRect.left) / accentPopupCellWidth)
+                        .toInt()
+                        .coerceIn(0, accentPopupCount - 1)
+                    if (nextIdx != accentPopupSelectedIndex) {
+                        accentPopupSelectedIndex = nextIdx
+                        triggerHaptic()
+                        needsInvalidate = true
+                    }
+                }
+                continue
+            }
+
             // 1. Spacebar Horizontal Cursor Glide (cancels Space long-press immediately on drag)
             if (slot == spaceSlot && key.type == KeyModel.TYPE_SPACE) {
-                if (!spaceGlideActive && abs(px - pointerDownX[slot]) > touchSlop) {
-                    spaceGlideActive = true
-                    spaceLastStepX = px
-                    if (longPressSlot == slot) {
-                        mainHandler.removeCallbacks(longPressRunnable)
-                        longPressSlot = -1
+                if (spaceCursorGlideEnabled) {
+                    if (!spaceGlideActive && abs(px - pointerDownX[slot]) > touchSlop) {
+                        spaceGlideActive = true
+                        spaceLastStepX = px
+                        if (longPressSlot == slot) {
+                            mainHandler.removeCallbacks(longPressRunnable)
+                            longPressSlot = -1
+                        }
+                        needsInvalidate = true
                     }
-                    needsInvalidate = true
-                }
-                if (spaceGlideActive) {
-                    val stepPx = 18f * density
-                    val dx = px - spaceLastStepX
-                    if (abs(dx) >= stepPx) {
-                        val steps = (dx / stepPx).toInt()
-                        spaceLastStepX += steps * stepPx
-                        actionListener?.onMoveCursor(steps)
-                        triggerHaptic()
+                    if (spaceGlideActive) {
+                        val stepPx = 18f * density
+                        val dx = px - spaceLastStepX
+                        if (abs(dx) >= stepPx) {
+                            val steps = (dx / stepPx).toInt()
+                            spaceLastStepX += steps * stepPx
+                            actionListener?.onMoveCursor(steps)
+                            triggerHaptic()
+                        }
                     }
                 }
                 continue
@@ -1788,10 +1989,11 @@ class KeyboardCanvasView(context: Context) : View(context) {
 
             // 2. Backspace Left-Swipe to Delete Whole Word
             if (slot == deleteSlot && key.type == KeyModel.TYPE_DELETE) {
-                if (!deleteSwipeTriggered && (pointerDownX[slot] - px) > 36f * density) {
+                if (swipeDeleteWordEnabled && !deleteSwipeTriggered && (pointerDownX[slot] - px) > 36f * density) {
                     deleteSwipeTriggered = true
                     mainHandler.removeCallbacks(backspaceRepeatRunnable)
                     triggerHaptic()
+                    playKeySound(KeyModel.TYPE_DELETE)
                     actionListener?.onDeleteWord()
                     needsInvalidate = true
                 }
@@ -1867,6 +2069,19 @@ class KeyboardCanvasView(context: Context) : View(context) {
             enterPopupSlot = -1
         }
 
+        val wasAccentPopup = (isAccentPopupActive && accentPopupSlot == slot)
+        val chosenAccent: String? = if (wasAccentPopup && accentPopupSelectedIndex in 0 until accentPopupCount) {
+            accentPopupChars[accentPopupSelectedIndex]
+        } else {
+            null
+        }
+        if (wasAccentPopup) {
+            isAccentPopupActive = false
+            accentPopupSlot = -1
+            accentPopupCount = 0
+            accentPopupDragged = false
+        }
+
         val wasShiftHold = (shiftHoldSlot == slot)
         if (wasShiftHold) {
             shiftHoldSlot = -1
@@ -1890,6 +2105,18 @@ class KeyboardCanvasView(context: Context) : View(context) {
                     setEmojiMode(true)
                 } else {
                     actionListener?.onInsertNewline()
+                }
+                return
+            }
+
+            if (wasAccentPopup) {
+                if (!chosenAccent.isNullOrEmpty()) {
+                    for (c in chosenAccent) {
+                        actionListener?.onChar(c)
+                    }
+                    if (layout.isShifted && !layout.isCapsLock && shiftHoldSlot == -1) {
+                        layout.updateShiftState(shifted = false, caps = false)
+                    }
                 }
                 return
             }
@@ -1944,17 +2171,24 @@ class KeyboardCanvasView(context: Context) : View(context) {
         }
 
         pressedSuggestionIndex = -1
+        if (!showTopUtilityBar) {
+            pressedStripAction = STRIP_ACTION_NONE
+            return
+        }
         if (y < currentStripHeight && width > 0) {
             val btnW = stripSideBtnWidthPx
             val w = width.toFloat()
+            val showTopEmoji = (emojiButtonMode == KeyboardPrefs.EMOJI_BTN_TOP_BAR)
+            val leftReserved = if (showTopEmoji) btnW * 2f else btnW
+            val settingsW = if (showSettingsKey) btnW else 0f
             val multiLang = layout.hasMultipleLanguages
-            val rightReserved = if (multiLang) btnW + stripLangBtnWidthPx else btnW
+            val rightReserved = settingsW + (if (multiLang) stripLangBtnWidthPx else 0f)
             pressedStripAction = when {
                 x < btnW -> STRIP_ACTION_CLIPBOARD
-                x < btnW * 2f -> STRIP_ACTION_EMOJI
-                x >= w - btnW -> STRIP_ACTION_SETTINGS
+                showTopEmoji && x < btnW * 2f -> STRIP_ACTION_EMOJI
+                showSettingsKey && x >= w - settingsW -> STRIP_ACTION_SETTINGS
                 multiLang && x >= w - rightReserved -> STRIP_ACTION_LANG_PILL
-                multiLang && x >= btnW * 2f && x < w - rightReserved -> STRIP_ACTION_LANG_CENTER
+                multiLang && x >= leftReserved && x < w - rightReserved -> STRIP_ACTION_LANG_CENTER
                 else -> STRIP_ACTION_NONE
             }
         } else {
@@ -1971,6 +2205,7 @@ class KeyboardCanvasView(context: Context) : View(context) {
                 val word = sm.slots[idx]
                 if (word.isNotEmpty()) {
                     triggerHaptic()
+                    playKeySound(KeyModel.TYPE_NORMAL)
                     actionListener?.onSuggestionSelected(word)
                 }
             }
@@ -1982,21 +2217,25 @@ class KeyboardCanvasView(context: Context) : View(context) {
         when (action) {
             STRIP_ACTION_CLIPBOARD -> {
                 triggerHaptic()
+                playKeySound(KeyModel.TYPE_NORMAL)
                 openClipboardOverlay()
             }
             STRIP_ACTION_EMOJI -> {
                 triggerHaptic()
+                playKeySound(KeyModel.TYPE_NORMAL)
                 setEmojiMode(true)
             }
             STRIP_ACTION_LANG_PILL,
             STRIP_ACTION_LANG_CENTER -> {
                 if (layout.hasMultipleLanguages) {
                     triggerHaptic()
+                    playKeySound(KeyModel.TYPE_NORMAL)
                     actionListener?.onLanguageToggle()
                 }
             }
             STRIP_ACTION_SETTINGS -> {
                 triggerHaptic()
+                playKeySound(KeyModel.TYPE_NORMAL)
                 actionListener?.onOpenSettings()
             }
         }
@@ -2066,12 +2305,16 @@ class KeyboardCanvasView(context: Context) : View(context) {
                 hadAny = true
             }
         }
-        if (hadAny || isEnterPopupActive) {
+        if (hadAny || isEnterPopupActive || isAccentPopupActive) {
             cancelTimers()
             activePopupKey = null
             popupLongPressTriggered = false
             isEnterPopupActive = false
             enterPopupSlot = -1
+            isAccentPopupActive = false
+            accentPopupSlot = -1
+            accentPopupCount = 0
+            accentPopupDragged = false
             deleteSlot = -1
             deleteSwipeTriggered = false
             spaceSlot = -1
@@ -2093,6 +2336,10 @@ class KeyboardCanvasView(context: Context) : View(context) {
         popupLongPressTriggered = false
         isEnterPopupActive = false
         enterPopupSlot = -1
+        isAccentPopupActive = false
+        accentPopupSlot = -1
+        accentPopupCount = 0
+        accentPopupDragged = false
         pressedSuggestionIndex = -1
         pressedStripAction = STRIP_ACTION_NONE
         stripPointerId = -1
@@ -2106,8 +2353,38 @@ class KeyboardCanvasView(context: Context) : View(context) {
     }
 
     private fun triggerHaptic() {
-        if (hapticEnabled) {
-            performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+        if (!hapticEnabled) return
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val vib = vibrator
+            val effect = when (hapticStrength) {
+                KeyboardPrefs.HAPTIC_LIGHT -> hapticEffectLight
+                KeyboardPrefs.HAPTIC_STRONG -> hapticEffectStrong
+                else -> hapticEffectMedium
+            }
+            if (vib != null && effect != null && vib.hasVibrator()) {
+                try {
+                    vib.vibrate(effect)
+                    return
+                } catch (_: Throwable) {
+                    // Fallback below
+                }
+            }
+        }
+        performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+    }
+
+    private fun playKeySound(keyType: Int) {
+        if (!soundEnabled) return
+        val fx = when (keyType) {
+            KeyModel.TYPE_DELETE -> AudioManager.FX_KEYPRESS_DELETE
+            KeyModel.TYPE_SPACE -> AudioManager.FX_KEYPRESS_SPACEBAR
+            KeyModel.TYPE_ENTER -> AudioManager.FX_KEYPRESS_RETURN
+            else -> AudioManager.FX_KEYPRESS_STANDARD
+        }
+        try {
+            audioManager?.playSoundEffect(fx)
+        } catch (_: Throwable) {
+            // Ignore audio playback errors
         }
     }
 

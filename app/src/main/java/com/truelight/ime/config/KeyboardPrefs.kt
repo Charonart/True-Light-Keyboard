@@ -45,6 +45,33 @@ class KeyboardPrefs(context: Context) {
         const val KEY_SHOW_EMOJI_KEY = "show_emoji_key"
         const val KEY_KEYPRESS_ANIMATION = "keypress_animation"
 
+        const val KEY_VI_AUTO_RESTORE = "vi_auto_restore"
+        const val KEY_SMART_PUNCTUATION = "smart_punctuation"
+        const val KEY_SPACE_CURSOR_GLIDE = "space_cursor_glide"
+        const val KEY_SPACE_LONG_PRESS_LANG = "space_long_press_lang"
+        const val KEY_SWIPE_DELETE_WORD = "swipe_delete_word"
+        const val KEY_LONG_PRESS_DELAY_MS = "long_press_delay_ms"
+        const val KEY_KEY_POPUP_ENABLED = "key_popup_enabled"
+        const val KEY_SHOW_TOP_UTILITY_BAR = "show_top_utility_bar"
+        const val KEY_EMOJI_BUTTON_MODE = "emoji_button_mode"
+        const val KEY_SHOW_SETTINGS_KEY = "show_settings_key"
+        const val KEY_SHOW_COMMA_KEY = "show_comma_key"
+        const val KEY_SHOW_PERIOD_KEY = "show_period_key"
+        const val KEY_SOUND_ENABLED = "sound_enabled"
+        const val KEY_HAPTIC_STRENGTH = "haptic_strength"
+
+        const val EMOJI_BTN_TOP_BAR = 0
+        const val EMOJI_BTN_BOTTOM_ROW = 1
+        const val EMOJI_BTN_HIDDEN = 2
+
+        const val HAPTIC_LIGHT = 0
+        const val HAPTIC_MEDIUM = 1
+        const val HAPTIC_STRONG = 2
+
+        const val MIN_LONG_PRESS_MS = 200
+        const val MAX_LONG_PRESS_MS = 600
+        const val DEFAULT_LONG_PRESS_MS = 340
+
         const val THEME_SYSTEM = 0
         const val THEME_DARK = 1
         const val THEME_AMOLED = 2
@@ -206,4 +233,74 @@ class KeyboardPrefs(context: Context) {
     var keypressAnimationEnabled: Boolean
         get() = prefs.getBoolean(KEY_KEYPRESS_ANIMATION, true)
         set(value) = prefs.edit().putBoolean(KEY_KEYPRESS_ANIMATION, value).apply()
+
+    var viAutoRestoreEnabled: Boolean
+        get() = prefs.getBoolean(KEY_VI_AUTO_RESTORE, true)
+        set(value) = prefs.edit().putBoolean(KEY_VI_AUTO_RESTORE, value).apply()
+
+    var smartPunctuationEnabled: Boolean
+        get() = prefs.getBoolean(KEY_SMART_PUNCTUATION, true)
+        set(value) = prefs.edit().putBoolean(KEY_SMART_PUNCTUATION, value).apply()
+
+    var spaceCursorGlideEnabled: Boolean
+        get() = prefs.getBoolean(KEY_SPACE_CURSOR_GLIDE, true)
+        set(value) = prefs.edit().putBoolean(KEY_SPACE_CURSOR_GLIDE, value).apply()
+
+    var spaceLongPressLangEnabled: Boolean
+        get() = prefs.getBoolean(KEY_SPACE_LONG_PRESS_LANG, true)
+        set(value) = prefs.edit().putBoolean(KEY_SPACE_LONG_PRESS_LANG, value).apply()
+
+    var swipeDeleteWordEnabled: Boolean
+        get() = prefs.getBoolean(KEY_SWIPE_DELETE_WORD, true)
+        set(value) = prefs.edit().putBoolean(KEY_SWIPE_DELETE_WORD, value).apply()
+
+    var longPressDelayMs: Int
+        get() = prefs.getInt(KEY_LONG_PRESS_DELAY_MS, DEFAULT_LONG_PRESS_MS)
+            .coerceIn(MIN_LONG_PRESS_MS, MAX_LONG_PRESS_MS)
+        set(value) = prefs.edit()
+            .putInt(KEY_LONG_PRESS_DELAY_MS, value.coerceIn(MIN_LONG_PRESS_MS, MAX_LONG_PRESS_MS))
+            .apply()
+
+    var keyPopupEnabled: Boolean
+        get() = prefs.getBoolean(KEY_KEY_POPUP_ENABLED, true)
+        set(value) = prefs.edit().putBoolean(KEY_KEY_POPUP_ENABLED, value).apply()
+
+    var showTopUtilityBar: Boolean
+        get() = prefs.getBoolean(KEY_SHOW_TOP_UTILITY_BAR, true)
+        set(value) = prefs.edit().putBoolean(KEY_SHOW_TOP_UTILITY_BAR, value).apply()
+
+    var emojiButtonMode: Int
+        get() {
+            if (!prefs.contains(KEY_EMOJI_BUTTON_MODE) && prefs.getBoolean(KEY_SHOW_EMOJI_KEY, false)) {
+                return EMOJI_BTN_BOTTOM_ROW
+            }
+            return prefs.getInt(KEY_EMOJI_BUTTON_MODE, EMOJI_BTN_TOP_BAR)
+                .coerceIn(EMOJI_BTN_TOP_BAR, EMOJI_BTN_HIDDEN)
+        }
+        set(value) = prefs.edit()
+            .putInt(KEY_EMOJI_BUTTON_MODE, value.coerceIn(EMOJI_BTN_TOP_BAR, EMOJI_BTN_HIDDEN))
+            .apply()
+
+    var showSettingsKey: Boolean
+        get() = prefs.getBoolean(KEY_SHOW_SETTINGS_KEY, true)
+        set(value) = prefs.edit().putBoolean(KEY_SHOW_SETTINGS_KEY, value).apply()
+
+    var showCommaKey: Boolean
+        get() = prefs.getBoolean(KEY_SHOW_COMMA_KEY, true)
+        set(value) = prefs.edit().putBoolean(KEY_SHOW_COMMA_KEY, value).apply()
+
+    var showPeriodKey: Boolean
+        get() = prefs.getBoolean(KEY_SHOW_PERIOD_KEY, true)
+        set(value) = prefs.edit().putBoolean(KEY_SHOW_PERIOD_KEY, value).apply()
+
+    var soundEnabled: Boolean
+        get() = prefs.getBoolean(KEY_SOUND_ENABLED, false)
+        set(value) = prefs.edit().putBoolean(KEY_SOUND_ENABLED, value).apply()
+
+    var hapticStrength: Int
+        get() = prefs.getInt(KEY_HAPTIC_STRENGTH, HAPTIC_MEDIUM)
+            .coerceIn(HAPTIC_LIGHT, HAPTIC_STRONG)
+        set(value) = prefs.edit()
+            .putInt(KEY_HAPTIC_STRENGTH, value.coerceIn(HAPTIC_LIGHT, HAPTIC_STRONG))
+            .apply()
 }

@@ -166,16 +166,17 @@ class InputConnectionBroker {
     }
 
     /**
-     * Commits a punctuation or symbol char. If it immediately follows a suggestion tap
-     * that appended a trailing space ("hello " + "."), strips that trailing space first -> "hello.".
+     * Commits a punctuation or symbol char. If [smartPunctuationEnabled] is true and it
+     * immediately follows a suggestion tap that appended a trailing space ("hello " + "."),
+     * strips that trailing space first -> "hello.".
      */
-    fun commitCharWithSmartPunctuation(c: Char): Boolean {
+    fun commitCharWithSmartPunctuation(c: Char, smartPunctuationEnabled: Boolean = true): Boolean {
         val ic = inputConnection ?: return false
         val wasSuggestion = lastCommittedFromSuggestion
         lastCommittedFromSuggestion = false
         lastSpaceTimeMs = 0L
 
-        if (wasSuggestion && !isDirectDispatchMode && isSmartPunctuation(c)) {
+        if (smartPunctuationEnabled && wasSuggestion && !isDirectDispatchMode && isSmartPunctuation(c)) {
             var success = false
             withBatchEdit {
                 val before = ic.getTextBeforeCursor(1, 0)

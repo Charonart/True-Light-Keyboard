@@ -2,6 +2,7 @@ package com.truelight.ime.engine
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -23,6 +24,20 @@ class TelexFsmEngineTest {
             text = res.text
         }
         return text
+    }
+
+    private fun typeWordWithSpace(word: String): String {
+        engine.reset()
+        for (c in word) {
+            val res = engine.processChar(c)
+            assertTrue("Expected letter '$c' in '$word' to be consumed", res.consumed)
+            assertFalse("Expected letter '$c' in '$word' not to terminate word", res.isWordTerminated)
+        }
+        val endRes = engine.processChar(' ')
+        assertFalse("Expected space after '$word' not to be consumed", endRes.consumed)
+        assertTrue("Expected space after '$word' to terminate word", endRes.isWordTerminated)
+        assertTrue("Expected engine to reset after space", engine.isEmpty())
+        return endRes.text
     }
 
     @Test
@@ -67,12 +82,99 @@ class TelexFsmEngineTest {
     fun testReversionOnRepeatKey() {
         // Typing 's' on already accented 'á' reverts to 'as'
         assertEquals("toas", typeWord("toass"))
-        // Repeating modifier key reverts circumflex / stroke
+        // Repeating modifier key reverts circumflex / stroke / horn
         assertEquals("aa", typeWord("aaa"))
         assertEquals("ee", typeWord("eee"))
         assertEquals("oo", typeWord("ooo"))
         assertEquals("dd", typeWord("ddd"))
         assertEquals("uow", typeWord("uoww"))
+    }
+
+    @Test
+    fun testStandaloneWAndDoubleWReversion() {
+        assertEquals("w", typeWord("ww"))
+        assertEquals("ww", typeWord("www"))
+        assertEquals("W", typeWord("WW"))
+        assertEquals("như", typeWord("nhw"))
+        assertEquals("nhw", typeWord("nhww"))
+        assertEquals("ư", typeWord("uw"))
+        assertEquals("uw", typeWord("uww"))
+        assertEquals("uow", typeWord("uoww"))
+        assertEquals("lưu", typeWord("luuw"))
+        assertEquals("luuw", typeWord("luuww"))
+        assertEquals("quw", typeWord("quw"))
+        assertEquals("cứu", typeWord("cuuws"))
+        assertEquals("cứu", typeWord("cuusw"))
+        assertEquals("khuỷu", typeWord("khuyur"))
+        assertEquals("ngoằn", typeWord("ngoawnf"))
+    }
+
+    @Test
+    fun testEnglishAndForeignAutoRestoreWithSpace() {
+        engine.autoRestoreEnabled = true
+        val foreignWords = listOf(
+            "window", "word", "work", "web", "wifi",
+            "user", "uses", "cases", "software", "camera",
+            "chrome", "github", "debug", "release", "android",
+            "kotlin", "facebook", "new", "view", "java",
+            "level", "left", "soft", "port", "next", "text"
+        )
+        for (word in foreignWords) {
+            assertEquals("Auto-restore failed for '$word'", word, typeWordWithSpace(word))
+        }
+    }
+
+    @Test
+    fun testVietnameseWordsAccurateWithAutoRestoreEnabled() {
+        engine.autoRestoreEnabled = true
+        engine.modernTonePlacement = false
+
+        val cases = listOf(
+            "tieengs" to "tiếng",
+            "vieetj" to "việt",
+            "vieejt" to "việt",
+            "truwowngf" to "trường",
+            "truongwf" to "trường",
+            "nguwowif" to "người",
+            "nguoiwf" to "người",
+            "nghiax" to "nghĩa",
+            "khuyeen" to "khuyên",
+            "quynhf" to "quỳnh",
+            "giuwax" to "giữa",
+            "giuawx" to "giữa",
+            "giuaxw" to "giữa",
+            "muaw" to "mưa",
+            "muaww" to "muaw",
+            "suawx" to "sữa",
+            "quawn" to "quăn",
+            "dduwowcj" to "được",
+            "dduocwj" to "được",
+            "hoaf" to "hòa",
+            "toans" to "toán",
+            "xoong" to "xông",
+            "xooong" to "xoong",
+            "toass" to "toas",
+            "aaa" to "aa",
+            "ddd" to "dd"
+        )
+        for ((input, expected) in cases) {
+            assertEquals("Vietnamese word failed for '$input'", expected, typeWordWithSpace(input))
+        }
+
+        engine.modernTonePlacement = true
+        assertEquals("hoà", typeWordWithSpace("hoaf"))
+    }
+
+    @Test
+    fun testAutoRestoreDisabledLeavesTelexTransformations() {
+        engine.autoRestoreEnabled = false
+        // With auto-restore OFF, Telex keeps raw transformations on English words
+        assertNotEquals("window", typeWordWithSpace("window"))
+        assertNotEquals("word", typeWordWithSpace("word"))
+        assertNotEquals("web", typeWordWithSpace("web"))
+        assertNotEquals("soft", typeWordWithSpace("soft"))
+        assertNotEquals("port", typeWordWithSpace("port"))
+        assertNotEquals("next", typeWordWithSpace("next"))
     }
 
     @Test
