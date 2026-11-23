@@ -4,19 +4,18 @@ package com.truelight.ime.engine
  * High-performance, zero-allocation Finite State Machine (FSM)
  * for Vietnamese Telex typing.
  */
-class TelexFsmEngine {
+class TelexFsmEngine : InputEngine {
 
     companion object {
         private const val MAX_WORD_LENGTH = 64
     }
 
+    /** false = old style (hòa, thúy), true = modern style (hoà, thuý) */
+    var modernTonePlacement: Boolean = false
+
     // Composing word buffer - preallocated CharArray
     private val buffer = CharArray(MAX_WORD_LENGTH)
     private var bufferLength = 0
-
-    // History tracking for reversible states
-    private val rawKeyHistory = CharArray(MAX_WORD_LENGTH)
-    private var rawHistoryLength = 0
 
     // Preallocated vowel index scratch array for zero-allocation tone placement
     private val vowelIndicesScratch = IntArray(8)
@@ -25,21 +24,14 @@ class TelexFsmEngine {
     private var currentTone = VietnameseCharMap.TONE_NONE
     private var lastToneKey: Char = '\u0000'
 
-    // Result carrier to avoid allocation during typing
-    class StepResult {
-        var consumed: Boolean = false
-        var text: String = ""
-        var isWordTerminated: Boolean = false
-    }
-
-    private val cachedResult = StepResult()
+    private val cachedResult = InputEngine.StepResult()
     private val stringBuilder = StringBuilder(MAX_WORD_LENGTH)
 
     /**
      * Process incoming character.
      * Returns cached StepResult with updated composing text.
      */
-    fun processChar(c: Char): StepResult {
+    override fun processChar(c: Char): InputEngine.StepResult {
         // If not a letter, finalize word
         if (!c.isLetter()) {
             cachedResult.consumed = false
@@ -49,9 +41,14 @@ class TelexFsmEngine {
             return cachedResult
         }
 
+        // Prevent buffer overflow: cleanly terminate current chunk so IME commits it
+        // and starts a fresh composing token with the incoming character.
         if (bufferLength >= MAX_WORD_LENGTH - 2) {
-            // Buffer full, reset
+            cachedResult.consumed = false
+            cachedResult.text = getComposingText()
+            cachedResult.isWordTerminated = true
             reset()
+            return cachedResult
         }
 
         val lower = c.lowercaseChar()
@@ -59,7 +56,6 @@ class TelexFsmEngine {
         // 1. Check for 'z' - remove tone
         if (lower == 'z' && currentTone != VietnameseCharMap.TONE_NONE) {
             removeCurrentTone()
-            recordRawKey(c)
             lastToneKey = '\u0000'
             cachedResult.consumed = true
             cachedResult.text = getComposingText()
@@ -71,21 +67,19 @@ class TelexFsmEngine {
         if (VietnameseCharMap.isToneKey(c)) {
             val tone = VietnameseCharMap.getToneFromKey(c)
             if (currentTone == tone && lastToneKey == lower) {
-                // Revert tone and append raw key (e.g. toas -> toá -> toas)
+                // Revert tone and append raw key (e.g. toas -> toá -> toas, cases -> caes)
                 removeCurrentTone()
                 appendChar(c)
-                recordRawKey(c)
                 lastToneKey = '\u0000'
                 cachedResult.consumed = true
                 cachedResult.text = getComposingText()
                 cachedResult.isWordTerminated = false
                 return cachedResult
-            } else if (hasAnyVowel()) {
+            } else if (hasAnyVowel() && isSingleVnSyllableShape()) {
                 val success = applyToneToBestVowel(tone)
                 if (success) {
                     currentTone = tone
                     lastToneKey = lower
-                    recordRawKey(c)
                     cachedResult.consumed = true
                     cachedResult.text = getComposingText()
                     cachedResult.isWordTerminated = false
@@ -101,8 +95,6 @@ class TelexFsmEngine {
                 if (currentTone != VietnameseCharMap.TONE_NONE) {
                     applyToneToBestVowel(currentTone)
                 }
-                recordRawKey(c)
-                lastToneKey = '\u0000'
                 cachedResult.consumed = true
                 cachedResult.text = getComposingText()
                 cachedResult.isWordTerminated = false
@@ -110,10 +102,8 @@ class TelexFsmEngine {
             }
         }
 
-        // 4. Default: append character directly
+        // 4. Default: append character directly (keep lastToneKey active while currentTone != TONE_NONE)
         appendChar(c)
-        recordRawKey(c)
-        lastToneKey = '\u0000'
 
         // Re-position active tone when syllable structure changes (e.g. hoafn -> hoàn, chuoosi -> chuối)
         if (currentTone != VietnameseCharMap.TONE_NONE) {
@@ -129,13 +119,11 @@ class TelexFsmEngine {
     /**
      * Handle backspace event. Returns true if consumed, false if buffer was empty.
      */
-    fun handleBackspace(): Boolean {
+    override fun handleBackspace(): Boolean {
         if (bufferLength == 0) return false
 
         bufferLength--
-        if (rawHistoryLength > 0) {
-            rawHistoryLength--
-        }
+        lastToneKey = '\u0000'
 
         // Re-evaluate tone from remaining characters
         recalcCurrentTone()
@@ -149,7 +137,7 @@ class TelexFsmEngine {
         return true
     }
 
-    fun getComposingText(): String {
+    override fun getComposingText(): String {
         stringBuilder.setLength(0)
         for (i in 0 until bufferLength) {
             stringBuilder.append(buffer[i])
@@ -157,21 +145,14 @@ class TelexFsmEngine {
         return stringBuilder.toString()
     }
 
-    fun length(): Int = bufferLength
+    override fun length(): Int = bufferLength
 
-    fun isEmpty(): Boolean = bufferLength == 0
+    override fun isEmpty(): Boolean = bufferLength == 0
 
-    fun reset() {
+    override fun reset() {
         bufferLength = 0
-        rawHistoryLength = 0
         currentTone = VietnameseCharMap.TONE_NONE
         lastToneKey = '\u0000'
-    }
-
-    private fun recordRawKey(c: Char) {
-        if (rawHistoryLength < MAX_WORD_LENGTH) {
-            rawKeyHistory[rawHistoryLength++] = c
-        }
     }
 
     private fun appendChar(c: Char) {
@@ -187,6 +168,88 @@ class TelexFsmEngine {
             }
         }
         return false
+    }
+
+    /**
+     * Verifies buffer has a single contiguous vowel cluster (rejects multi-syllable
+     * foreign words like "came" in "camera" that have a Vowel-Consonant-Vowel split).
+     */
+    private fun isSingleVnSyllableShape(): Boolean {
+        var inVowelCluster = false
+        var clusterCount = 0
+        for (i in 0 until bufferLength) {
+            val ch = buffer[i]
+            val lower = ch.lowercaseChar()
+            if (lower == 'f' || lower == 'j' || lower == 'w' || lower == 'z') {
+                return false
+            }
+            if (VietnameseCharMap.isVowel(ch)) {
+                if (!inVowelCluster) {
+                    clusterCount++
+                    if (clusterCount > 1) return false
+                    inVowelCluster = true
+                }
+            } else {
+                inVowelCluster = false
+            }
+        }
+        return clusterCount == 1
+    }
+
+    private fun isValidVnCodaChar(c: Char): Boolean {
+        return when (c.lowercaseChar()) {
+            'c', 'h', 'm', 'n', 'g', 'p', 't' -> true
+            else -> false
+        }
+    }
+
+    /**
+     * Checks whether the buffer currently contains only a valid Vietnamese consonant onset
+     * (no vowels yet) so standalone 'w' can legitimately produce 'ư' (e.g. "nhw" -> "như").
+     */
+    private fun isValidVnOnsetOnly(): Boolean {
+        if (bufferLength == 0 || bufferLength > 3) return false
+        val c0 = buffer[0].lowercaseChar()
+        if (bufferLength == 1) {
+            return !VietnameseCharMap.isVowel(c0) &&
+                c0 != 'f' && c0 != 'j' && c0 != 'w' && c0 != 'z' && c0 != 'q'
+        }
+        val c1 = buffer[1].lowercaseChar()
+        if (bufferLength == 2) {
+            return (c0 == 'c' && c1 == 'h') ||
+                (c0 == 'g' && c1 == 'h') ||
+                (c0 == 'k' && c1 == 'h') ||
+                (c0 == 'n' && (c1 == 'g' || c1 == 'h')) ||
+                (c0 == 'p' && c1 == 'h') ||
+                (c0 == 't' && (c1 == 'h' || c1 == 'r'))
+        }
+        val c2 = buffer[2].lowercaseChar()
+        return c0 == 'n' && c1 == 'g' && c2 == 'h'
+    }
+
+    /**
+     * Checks whether the current buffer (starting with 'd'/'D') is a plausible Vietnamese syllable
+     * eligible for remote 'd' -> 'đ' (e.g. "duongd" -> "đương", "dand" -> "đan"),
+     * preventing corruption of English words like "download", "discord", "decide", "divider".
+     */
+    private fun isPlausibleVnSyllableForRemoteD(): Boolean {
+        if (bufferLength < 2 || bufferLength > 6) return false
+        var seenVowel = false
+        var seenCoda = false
+        for (i in 1 until bufferLength) {
+            val ch = buffer[i]
+            val lower = ch.lowercaseChar()
+            if (lower == 'f' || lower == 'j' || lower == 'w' || lower == 'z') return false
+            if (VietnameseCharMap.isVowel(ch)) {
+                if (seenCoda) return false // Vowel after coda -> multi-syllable loanword (e.g. "decide")
+                seenVowel = true
+            } else {
+                if (!seenVowel) return false // Consonant cluster after 'd' (e.g. "dr") -> not Vietnamese
+                if (!isValidVnCodaChar(ch)) return false // Non-Vietnamese coda (e.g. "s", "l", "v", "r")
+                seenCoda = true
+            }
+        }
+        return seenVowel
     }
 
     private fun recalcCurrentTone() {
@@ -224,7 +287,7 @@ class TelexFsmEngine {
 
     /**
      * Tone placement according to Vietnamese orthography rules
-     * (e.g. toán, hòa, hòe, thúy, việt, đường, chuối, nguyễn, người).
+     * (e.g. toán, hòa, hòe, thúy, việt, đường, chuối, nguyễn, người, cứu).
      */
     private fun findToneTargetIndex(): Int {
         var vowelCount = 0
@@ -271,7 +334,15 @@ class TelexFsmEngine {
                 // Closed syllable: toán, hoàn, thuận -> 2nd vowel
                 return vowelIndicesScratch[1]
             }
-            // Open syllable: hòa, hòe, thúy, mía, múa, mứa, báo -> 1st vowel
+            if (modernTonePlacement) {
+                val r1 = VietnameseCharMap.getVowelRow(buffer[vowelIndicesScratch[0]])
+                val r2 = VietnameseCharMap.getVowelRow(buffer[vowelIndicesScratch[1]])
+                // Modern orthography: oa, oe, uy -> 2nd vowel (hoà, hoè, thuý)
+                if ((r1 == 6 && r2 == 0) || (r1 == 6 && r2 == 3) || (r1 == 9 && r2 == 11)) {
+                    return vowelIndicesScratch[1]
+                }
+            }
+            // Open syllable: hòa, hòe, thúy, mía, múa, mứa, báo, cứu -> 1st vowel
             return vowelIndicesScratch[0]
         }
 
@@ -282,16 +353,14 @@ class TelexFsmEngine {
     private fun handleModifierKey(c: Char): Boolean {
         val lower = c.lowercaseChar()
 
-        // 'dd' -> đ (checks adjacent char first, then onset 'd' at index 0)
+        // 'dd' -> đ (checks adjacent char first, then remote onset 'd' at index 0 for valid VN syllables)
         if (lower == 'd') {
             if (bufferLength > 0) {
+                val last = buffer[bufferLength - 1]
                 val targetIdx = when {
-                    buffer[bufferLength - 1].lowercaseChar() == 'd' ||
-                        buffer[bufferLength - 1] == 'đ' ||
-                        buffer[bufferLength - 1] == 'Đ' -> bufferLength - 1
-                    buffer[0].lowercaseChar() == 'd' ||
-                        buffer[0] == 'đ' ||
-                        buffer[0] == 'Đ' -> 0
+                    last.lowercaseChar() == 'd' || last == 'đ' || last == 'Đ' -> bufferLength - 1
+                    buffer[0] == 'đ' || buffer[0] == 'Đ' -> 0
+                    buffer[0].lowercaseChar() == 'd' && isPlausibleVnSyllableForRemoteD() -> 0
                     else -> -1
                 }
                 if (targetIdx >= 0) {
@@ -306,7 +375,7 @@ class TelexFsmEngine {
                             true
                         }
                         'đ', 'Đ' -> {
-                            // Revert: đ + d -> dd
+                            // Revert: đ + d -> d...d (e.g. ddd -> dd, dadd -> dad)
                             buffer[targetIdx] = if (prev == 'đ') 'd' else 'D'
                             appendChar(c)
                             true
@@ -318,7 +387,7 @@ class TelexFsmEngine {
             return false
         }
 
-        // 'w' shortcut for ư, ơ, ă, and compound uo -> ươ
+        // 'w' shortcut for ư, ơ, ă, compound uo -> ươ, and compound uu -> ưu (lưu, hưu, cứu)
         if (lower == 'w') {
             if (bufferLength == 0) {
                 buffer[bufferLength++] = if (c.isUpperCase()) 'Ư' else 'ư'
@@ -342,6 +411,27 @@ class TelexFsmEngine {
                         if (transformedU != null && transformedO != null) {
                             buffer[i - 1] = transformedU
                             buffer[i] = transformedO
+                            return true
+                        }
+                    }
+                }
+
+                // Handle compound 'uu' + 'w' -> 'ưu' (lưu, hưu, cứu) and revert 'ưu' + 'w' -> 'uuw'
+                if (row == 9 && i > 0) {
+                    val prevCh = buffer[i - 1]
+                    val prevRow = VietnameseCharMap.getVowelRow(prevCh)
+                    val isAfterQ = i >= 2 && buffer[i - 2].lowercaseChar() == 'q'
+                    if (!isAfterQ && prevRow == 9) {
+                        val transformedFirstU = VietnameseCharMap.transformVowel(prevCh, 'w')
+                        if (transformedFirstU != null) {
+                            buffer[i - 1] = transformedFirstU
+                            return true
+                        }
+                    } else if (prevRow == 10) {
+                        val revertedFirstU = VietnameseCharMap.revertVowel(prevCh)
+                        if (revertedFirstU != null) {
+                            buffer[i - 1] = revertedFirstU
+                            appendChar(c)
                             return true
                         }
                     }
@@ -376,8 +466,13 @@ class TelexFsmEngine {
                 }
             }
 
-            appendChar(if (c.isUpperCase()) 'Ư' else 'ư')
-            return true
+            // Only emit standalone 'ư' when preceded by a valid Vietnamese onset consonant (no vowels yet).
+            // Otherwise let 'w' append normally so English words like "new", "view", "few" stay intact!
+            if (isValidVnOnsetOnly()) {
+                appendChar(if (c.isUpperCase()) 'Ư' else 'ư')
+                return true
+            }
+            return false
         }
 
         // 'a' (a <-> â), 'e' (e <-> ê), 'o' (o <-> ô)
@@ -394,6 +489,7 @@ class TelexFsmEngine {
             else -> return false
         }
 
+        // Scan backwards, stopping if we hit an intervening different vowel or non-Vietnamese coda consonant
         for (i in bufferLength - 1 downTo 0) {
             val ch = buffer[i]
             val row = VietnameseCharMap.getVowelRow(ch)
@@ -411,6 +507,12 @@ class TelexFsmEngine {
                     appendChar(c)
                     return true
                 }
+            } else if (row >= 0) {
+                // Intervening different vowel (e.g. "camera", "pokemon", "tomato") -> stop!
+                break
+            } else if (!isValidVnCodaChar(ch)) {
+                // Non-Vietnamese coda consonant (e.g. "here", "level", "java", "delete", "color") -> stop!
+                break
             }
         }
 

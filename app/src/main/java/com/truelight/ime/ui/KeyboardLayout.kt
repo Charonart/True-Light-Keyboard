@@ -1,11 +1,14 @@
 package com.truelight.ime.ui
 
+import com.truelight.ime.lang.LanguageRegistry
+import com.truelight.ime.lang.LanguageSpec
 import com.truelight.ime.ui.theme.KeyboardTheme
 
 /**
- * Preallocated Key Layout Engine.
- * Supports QWERTY, Symbols, Symbols-Shift, and Numpad.
- * Zero-allocation during runtime layout switching or rendering.
+ * Dynamic, zero-allocation-in-onDraw Key Layout Engine.
+ * Supports all Group 1 languages, optional dedicated number row,
+ * dedicated comma key, zero dead zones via nearest-key hit resolution,
+ * Symbols, Symbols-Shift, and Numpad.
  */
 class KeyboardLayout(private val theme: KeyboardTheme) {
 
@@ -19,25 +22,30 @@ class KeyboardLayout(private val theme: KeyboardTheme) {
     var currentMode = Mode.ALPHA
     var isShifted = false
     var isCapsLock = false
-    var isVietnamese = true // Telex vs EN
+    var showNumberRow = false
+    var showSubLabels = true
 
-    // QWERTY Keys
-    val qwertyRows = arrayOf(
-        arrayOf("q", "w", "e", "r", "t", "y", "u", "i", "o", "p"),
-        arrayOf("a", "s", "d", "f", "g", "h", "j", "k", "l"),
-        arrayOf("z", "x", "c", "v", "b", "n", "m")
-    )
-    val qwertySubLabels = arrayOf(
-        arrayOf("1", "2", "3", "4", "5", "6", "7", "8", "9", "0"),
-        arrayOf("@", "#", "$", "%", "&", "-", "+", "(", ")"),
-        arrayOf("*", "\"", "'", ":", ";", "!", "?")
-    )
+    var activeLanguage: LanguageSpec = LanguageRegistry.EN_US
+        private set
 
-    // Preallocated key arrays
-    val alphaKeys = ArrayList<KeyModel>()
-    val symbolKeys = ArrayList<KeyModel>()
-    val symbolShiftKeys = ArrayList<KeyModel>()
-    val numpadKeys = ArrayList<KeyModel>()
+    var hasMultipleLanguages = false
+        private set
+
+    private var lastWidth = 0
+    private var lastTopOffset = 0f
+    private var lastKeyAreaHeight = 0f
+
+    // Track dynamic row counts for active language alpha layout
+    private var numberRowCount = 0
+    private var r0Count = 0
+    private var r1Count = 0
+    private var r2LetterCount = 0
+
+    // Preallocated key lists
+    val alphaKeys = ArrayList<KeyModel>(64)
+    val symbolKeys = ArrayList<KeyModel>(40)
+    val symbolShiftKeys = ArrayList<KeyModel>(40)
+    val numpadKeys = ArrayList<KeyModel>(16)
 
     init {
         buildAlphaKeys()
@@ -46,53 +54,99 @@ class KeyboardLayout(private val theme: KeyboardTheme) {
         buildNumpadKeys()
     }
 
+    fun setLanguage(spec: LanguageSpec, multipleLanguages: Boolean) {
+        this.activeLanguage = spec
+        this.hasMultipleLanguages = multipleLanguages
+        this.isShifted = false
+        this.isCapsLock = false
+        buildAlphaKeys()
+        buildSymbolKeys()
+        buildSymbolShiftKeys()
+        if (lastWidth > 0 && lastKeyAreaHeight > 0f) {
+            measure(lastWidth, lastTopOffset, lastKeyAreaHeight)
+        }
+    }
+
+    fun setDisplayOptions(numberRow: Boolean, subLabels: Boolean) {
+        val changed = (this.showNumberRow != numberRow)
+        this.showNumberRow = numberRow
+        this.showSubLabels = subLabels
+        if (changed) {
+            buildAlphaKeys()
+            if (isShifted || isCapsLock) {
+                updateShiftState(isShifted, isCapsLock)
+            }
+            if (lastWidth > 0 && lastKeyAreaHeight > 0f) {
+                measure(lastWidth, lastTopOffset, lastKeyAreaHeight)
+            }
+        }
+    }
+
     private fun buildAlphaKeys() {
         alphaKeys.clear()
-        // Row 0
-        for (i in qwertyRows[0].indices) {
-            val key = KeyModel(
-                code = qwertyRows[0][i][0].code,
-                label = qwertyRows[0][i],
-                subLabel = qwertySubLabels[0][i],
-                type = KeyModel.TYPE_NORMAL
-            )
-            alphaKeys.add(key)
+
+        // Optional dedicated number row (1..0)
+        numberRowCount = if (showNumberRow) 10 else 0
+        if (showNumberRow) {
+            val digits = arrayOf("1", "2", "3", "4", "5", "6", "7", "8", "9", "0")
+            for (d in digits) {
+                alphaKeys.add(KeyModel(code = d[0].code, label = d, type = KeyModel.TYPE_NORMAL))
+            }
         }
 
-        // Row 1
-        for (i in qwertyRows[1].indices) {
-            val key = KeyModel(
-                code = qwertyRows[1][i][0].code,
-                label = qwertyRows[1][i],
-                subLabel = qwertySubLabels[1][i],
-                type = KeyModel.TYPE_NORMAL
+        val rows = activeLanguage.rows
+        val subs = activeLanguage.subLabels
+
+        r0Count = rows[0].size
+        for (i in 0 until r0Count) {
+            val sub = if (!showNumberRow && subs != null && i < subs[0].size) subs[0][i] else null
+            alphaKeys.add(
+                KeyModel(
+                    code = rows[0][i][0].code,
+                    label = rows[0][i],
+                    subLabel = sub,
+                    type = KeyModel.TYPE_NORMAL
+                )
             )
-            alphaKeys.add(key)
         }
 
-        // Row 2: Shift, z..m, Backspace
-        val shiftKey = KeyModel(code = KeyModel.CODE_SHIFT, label = "⇧", type = KeyModel.TYPE_SHIFT)
-        alphaKeys.add(shiftKey)
-
-        for (i in qwertyRows[2].indices) {
-            val key = KeyModel(
-                code = qwertyRows[2][i][0].code,
-                label = qwertyRows[2][i],
-                subLabel = qwertySubLabels[2][i],
-                type = KeyModel.TYPE_NORMAL
+        r1Count = rows[1].size
+        for (i in 0 until r1Count) {
+            val sub = if (subs != null && i < subs[1].size) subs[1][i] else null
+            alphaKeys.add(
+                KeyModel(
+                    code = rows[1][i][0].code,
+                    label = rows[1][i],
+                    subLabel = sub,
+                    type = KeyModel.TYPE_NORMAL
+                )
             )
-            alphaKeys.add(key)
         }
 
-        val delKey = KeyModel(code = KeyModel.CODE_DELETE, label = "⌫", type = KeyModel.TYPE_DELETE)
-        alphaKeys.add(delKey)
+        // Row 2: Shift, letters, Backspace
+        alphaKeys.add(KeyModel(code = KeyModel.CODE_SHIFT, label = "⇧", type = KeyModel.TYPE_SHIFT))
+        r2LetterCount = rows[2].size
+        for (i in 0 until r2LetterCount) {
+            val sub = if (subs != null && i < subs[2].size) subs[2][i] else null
+            alphaKeys.add(
+                KeyModel(
+                    code = rows[2][i][0].code,
+                    label = rows[2][i],
+                    subLabel = sub,
+                    type = KeyModel.TYPE_NORMAL
+                )
+            )
+        }
+        alphaKeys.add(KeyModel(code = KeyModel.CODE_DELETE, label = "⌫", type = KeyModel.TYPE_DELETE))
 
-        // Row 3: ?123, Emoji, Lang, Space, ., Enter
+        // Row 3 (7 balanced keys): ?123, Emoji, Lang/Settings, Comma, Space, Period, Enter
         alphaKeys.add(KeyModel(code = KeyModel.CODE_SWITCH_SYMBOLS, label = "?123", type = KeyModel.TYPE_SWITCH_SYMBOLS))
-        alphaKeys.add(KeyModel(code = KeyModel.CODE_EMOJI, label = "😊", type = KeyModel.TYPE_EMOJI))
-        alphaKeys.add(KeyModel(code = KeyModel.CODE_SWITCH_LANG, label = "VIE", type = KeyModel.TYPE_SWITCH_LANG))
-        alphaKeys.add(KeyModel(code = KeyModel.CODE_SPACE, label = "Dấu cách", type = KeyModel.TYPE_SPACE))
-        alphaKeys.add(KeyModel(code = '.'.code, label = ".", type = KeyModel.TYPE_NORMAL))
+        alphaKeys.add(KeyModel(code = KeyModel.CODE_EMOJI, label = "", type = KeyModel.TYPE_EMOJI))
+        val langLabel = if (hasMultipleLanguages) activeLanguage.shortCode else "⚙"
+        alphaKeys.add(KeyModel(code = KeyModel.CODE_SWITCH_LANG, label = langLabel, type = KeyModel.TYPE_SWITCH_LANG))
+        alphaKeys.add(KeyModel(code = ','.code, label = ",", subLabel = "!", type = KeyModel.TYPE_NORMAL))
+        alphaKeys.add(KeyModel(code = KeyModel.CODE_SPACE, label = activeLanguage.spaceLabel, type = KeyModel.TYPE_SPACE))
+        alphaKeys.add(KeyModel(code = '.'.code, label = ".", subLabel = "?", type = KeyModel.TYPE_NORMAL))
         alphaKeys.add(KeyModel(code = KeyModel.CODE_ENTER, label = "↵", type = KeyModel.TYPE_ENTER))
     }
 
@@ -104,17 +158,15 @@ class KeyboardLayout(private val theme: KeyboardTheme) {
         val r1 = arrayOf("@", "#", "$", "%", "&", "-", "+", "(", ")", "/")
         for (s in r1) symbolKeys.add(KeyModel(code = s[0].code, label = s, type = KeyModel.TYPE_NORMAL))
 
-        // Row 2: =\<, *, ", ', :, ;, !, ?, Backspace
         symbolKeys.add(KeyModel(code = KeyModel.CODE_SHIFT, label = "=\\<", type = KeyModel.TYPE_SHIFT))
         val r2 = arrayOf("*", "\"", "'", ":", ";", "!", "?")
         for (s in r2) symbolKeys.add(KeyModel(code = s[0].code, label = s, type = KeyModel.TYPE_NORMAL))
         symbolKeys.add(KeyModel(code = KeyModel.CODE_DELETE, label = "⌫", type = KeyModel.TYPE_DELETE))
 
-        // Row 3: ABC, Emoji, ,, Space, ., Enter
         symbolKeys.add(KeyModel(code = KeyModel.CODE_SWITCH_ALPHA, label = "ABC", type = KeyModel.TYPE_SWITCH_ALPHA))
-        symbolKeys.add(KeyModel(code = KeyModel.CODE_EMOJI, label = "😊", type = KeyModel.TYPE_EMOJI))
+        symbolKeys.add(KeyModel(code = KeyModel.CODE_EMOJI, label = "", type = KeyModel.TYPE_EMOJI))
         symbolKeys.add(KeyModel(code = ','.code, label = ",", type = KeyModel.TYPE_NORMAL))
-        symbolKeys.add(KeyModel(code = KeyModel.CODE_SPACE, label = "Dấu cách", type = KeyModel.TYPE_SPACE))
+        symbolKeys.add(KeyModel(code = KeyModel.CODE_SPACE, label = activeLanguage.spaceLabel, type = KeyModel.TYPE_SPACE))
         symbolKeys.add(KeyModel(code = '.'.code, label = ".", type = KeyModel.TYPE_NORMAL))
         symbolKeys.add(KeyModel(code = KeyModel.CODE_ENTER, label = "↵", type = KeyModel.TYPE_ENTER))
     }
@@ -133,34 +185,30 @@ class KeyboardLayout(private val theme: KeyboardTheme) {
         symbolShiftKeys.add(KeyModel(code = KeyModel.CODE_DELETE, label = "⌫", type = KeyModel.TYPE_DELETE))
 
         symbolShiftKeys.add(KeyModel(code = KeyModel.CODE_SWITCH_ALPHA, label = "ABC", type = KeyModel.TYPE_SWITCH_ALPHA))
-        symbolShiftKeys.add(KeyModel(code = KeyModel.CODE_EMOJI, label = "😊", type = KeyModel.TYPE_EMOJI))
+        symbolShiftKeys.add(KeyModel(code = KeyModel.CODE_EMOJI, label = "", type = KeyModel.TYPE_EMOJI))
         symbolShiftKeys.add(KeyModel(code = '<'.code, label = "<", type = KeyModel.TYPE_NORMAL))
-        symbolShiftKeys.add(KeyModel(code = KeyModel.CODE_SPACE, label = "Dấu cách", type = KeyModel.TYPE_SPACE))
+        symbolShiftKeys.add(KeyModel(code = KeyModel.CODE_SPACE, label = activeLanguage.spaceLabel, type = KeyModel.TYPE_SPACE))
         symbolShiftKeys.add(KeyModel(code = '>'.code, label = ">", type = KeyModel.TYPE_NORMAL))
         symbolShiftKeys.add(KeyModel(code = KeyModel.CODE_ENTER, label = "↵", type = KeyModel.TYPE_ENTER))
     }
 
     private fun buildNumpadKeys() {
         numpadKeys.clear()
-        // Row 0: 1, 2, 3, Del
         numpadKeys.add(KeyModel(code = '1'.code, label = "1", type = KeyModel.TYPE_NORMAL))
         numpadKeys.add(KeyModel(code = '2'.code, label = "2", type = KeyModel.TYPE_NORMAL))
         numpadKeys.add(KeyModel(code = '3'.code, label = "3", type = KeyModel.TYPE_NORMAL))
         numpadKeys.add(KeyModel(code = KeyModel.CODE_DELETE, label = "⌫", type = KeyModel.TYPE_DELETE))
 
-        // Row 1: 4, 5, 6, -
         numpadKeys.add(KeyModel(code = '4'.code, label = "4", type = KeyModel.TYPE_NORMAL))
         numpadKeys.add(KeyModel(code = '5'.code, label = "5", type = KeyModel.TYPE_NORMAL))
         numpadKeys.add(KeyModel(code = '6'.code, label = "6", type = KeyModel.TYPE_NORMAL))
         numpadKeys.add(KeyModel(code = '-'.code, label = "-", type = KeyModel.TYPE_NORMAL))
 
-        // Row 2: 7, 8, 9, +
         numpadKeys.add(KeyModel(code = '7'.code, label = "7", type = KeyModel.TYPE_NORMAL))
         numpadKeys.add(KeyModel(code = '8'.code, label = "8", type = KeyModel.TYPE_NORMAL))
         numpadKeys.add(KeyModel(code = '9'.code, label = "9", type = KeyModel.TYPE_NORMAL))
         numpadKeys.add(KeyModel(code = '+'.code, label = "+", type = KeyModel.TYPE_NORMAL))
 
-        // Row 3: ABC, 0, ., Enter
         numpadKeys.add(KeyModel(code = KeyModel.CODE_SWITCH_ALPHA, label = "ABC", type = KeyModel.TYPE_SWITCH_ALPHA))
         numpadKeys.add(KeyModel(code = '0'.code, label = "0", type = KeyModel.TYPE_NORMAL))
         numpadKeys.add(KeyModel(code = '.'.code, label = ".", type = KeyModel.TYPE_NORMAL))
@@ -176,95 +224,121 @@ class KeyboardLayout(private val theme: KeyboardTheme) {
         }
     }
 
-    /**
-     * Compute and cache bounding boxes for all keys on resize.
-     * Zero-allocation in onDraw.
-     */
-    fun measure(width: Int, height: Int) {
-        val rowHeight = height / 4f
+    fun measure(width: Int, topOffset: Float, keyAreaHeight: Float) {
+        lastWidth = width
+        lastTopOffset = topOffset
+        lastKeyAreaHeight = keyAreaHeight
+
         val mh = theme.keyMarginH
         val mv = theme.keyMarginV
 
-        measureAlpha(width, rowHeight, mh, mv)
-        measureSymbols(width, rowHeight, mh, mv)
-        measureSymbolShift(width, rowHeight, mh, mv)
-        measureNumpad(width, rowHeight, mh, mv)
+        measureAlpha(width, topOffset, keyAreaHeight, mh, mv)
+
+        // Symbols, Symbols-Shift, and Numpad fill the exact same keyAreaHeight -> zero vertical jump
+        val rowHeight4 = keyAreaHeight / 4f
+        measureSymbols(width, topOffset, rowHeight4, mh, mv)
+        measureSymbolShift(width, topOffset, rowHeight4, mh, mv)
+        measureNumpad(width, topOffset, rowHeight4, mh, mv)
     }
 
-    private fun measureAlpha(width: Int, rowHeight: Float, mh: Float, mv: Float) {
-        // Row 0: 10 keys
-        val kw10 = (width - mh * 20) / 10f
+    private fun measureAlpha(width: Int, topOffset: Float, keyAreaHeight: Float, mh: Float, mv: Float) {
+        val totalRows = if (showNumberRow) 5 else 4
+        val rowHeight = keyAreaHeight / totalRows.toFloat()
+        var idx = 0
+        var curRow = 0
+
+        // Optional number row (10 keys)
+        if (showNumberRow) {
+            val kwNum = (width - mh * 20) / 10f
+            var x = mh
+            val y = topOffset + curRow * rowHeight + mv
+            for (i in 0 until 10) {
+                alphaKeys[idx++].bounds.set(x, y, x + kwNum, y + rowHeight - mv * 2)
+                x += kwNum + mh * 2
+            }
+            curRow++
+        }
+
+        // Row 0: r0Count keys (10 or 11 for Russian)
+        val kw0 = (width - mh * (r0Count * 2)) / r0Count.toFloat()
         var x = mh
-        var y = mv
-        for (i in 0 until 10) {
-            alphaKeys[i].bounds.set(x, y, x + kw10, y + rowHeight - mv * 2)
-            x += kw10 + mh * 2
+        var y = topOffset + curRow * rowHeight + mv
+        for (i in 0 until r0Count) {
+            alphaKeys[idx++].bounds.set(x, y, x + kw0, y + rowHeight - mv * 2)
+            x += kw0 + mh * 2
         }
+        curRow++
 
-        // Row 1: 9 keys (centered)
-        val kw9 = kw10
-        val offsetR1 = (width - (kw9 * 9 + mh * 18)) / 2f
+        // Row 1: r1Count keys (centered if fewer than r0Count)
+        val kw1 = if (r1Count <= r0Count) kw0 else (width - mh * (r1Count * 2)) / r1Count.toFloat()
+        val row1TotalW = kw1 * r1Count + mh * (r1Count * 2)
+        val offsetR1 = ((width - row1TotalW) / 2f).coerceAtLeast(0f)
         x = offsetR1 + mh
-        y = rowHeight + mv
-        for (i in 10 until 19) {
-            alphaKeys[i].bounds.set(x, y, x + kw9, y + rowHeight - mv * 2)
-            x += kw9 + mh * 2
+        y = topOffset + curRow * rowHeight + mv
+        for (i in 0 until r1Count) {
+            alphaKeys[idx++].bounds.set(x, y, x + kw1, y + rowHeight - mv * 2)
+            x += kw1 + mh * 2
         }
+        curRow++
 
-        // Row 2: Shift (1.4x), 7 keys, Backspace (1.4x)
-        val specialW = kw10 * 1.4f
-        val middleW = (width - specialW * 2 - mh * 18) / 7f
-        y = rowHeight * 2 + mv
+        // Row 2: Shift, r2LetterCount keys, Backspace
+        val kw10 = (width - mh * 20) / 10f
+        val specialW = if (r2LetterCount >= 9) kw10 * 1.1f else kw10 * 1.4f
+        val totalColsR2 = r2LetterCount + 2
+        val middleW = (width - specialW * 2 - mh * (totalColsR2 * 2)) / r2LetterCount.toFloat()
+        y = topOffset + curRow * rowHeight + mv
         x = mh
-        alphaKeys[19].bounds.set(x, y, x + specialW, y + rowHeight - mv * 2) // Shift
+        alphaKeys[idx++].bounds.set(x, y, x + specialW, y + rowHeight - mv * 2) // Shift
         x += specialW + mh * 2
-        for (i in 20 until 27) {
-            alphaKeys[i].bounds.set(x, y, x + middleW, y + rowHeight - mv * 2)
+        for (i in 0 until r2LetterCount) {
+            alphaKeys[idx++].bounds.set(x, y, x + middleW, y + rowHeight - mv * 2)
             x += middleW + mh * 2
         }
-        alphaKeys[27].bounds.set(x, y, x + specialW, y + rowHeight - mv * 2) // Del
+        alphaKeys[idx++].bounds.set(x, y, x + specialW, y + rowHeight - mv * 2) // Del
+        curRow++
 
-        // Row 3: ?123, Emoji, Lang, Space, ., Enter
-        y = rowHeight * 3 + mv
-        val sideKeyW = kw10 * 1.3f
-        val smallKeyW = kw10 * 0.9f
-        val enterW = kw10 * 1.4f
-        val dotW = kw10 * 0.8f
-        val spaceW = width - (sideKeyW + smallKeyW + smallKeyW + dotW + enterW + mh * 12)
+        // Row 3 (7 keys): ?123 (1.2x), Emoji (0.85x), Lang/Settings (0.85x), , (0.75x), Space (~4.25x), . (0.75x), Enter (1.35x)
+        y = topOffset + curRow * rowHeight + mv
+        val sideKeyW = kw10 * 1.2f
+        val smallKeyW = kw10 * 0.85f
+        val punctW = kw10 * 0.75f
+        val enterW = kw10 * 1.35f
+        val spaceW = (width - (sideKeyW + smallKeyW * 2f + punctW * 2f + enterW + mh * 14f)).coerceAtLeast(kw10 * 2f)
 
         x = mh
-        alphaKeys[28].bounds.set(x, y, x + sideKeyW, y + rowHeight - mv * 2) // ?123
+        alphaKeys[idx++].bounds.set(x, y, x + sideKeyW, y + rowHeight - mv * 2) // ?123
         x += sideKeyW + mh * 2
-        alphaKeys[29].bounds.set(x, y, x + smallKeyW, y + rowHeight - mv * 2) // Emoji
+        alphaKeys[idx++].bounds.set(x, y, x + smallKeyW, y + rowHeight - mv * 2) // Emoji
         x += smallKeyW + mh * 2
-        alphaKeys[30].bounds.set(x, y, x + smallKeyW, y + rowHeight - mv * 2) // Lang
+        alphaKeys[idx++].bounds.set(x, y, x + smallKeyW, y + rowHeight - mv * 2) // Lang/Settings
         x += smallKeyW + mh * 2
-        alphaKeys[31].bounds.set(x, y, x + spaceW, y + rowHeight - mv * 2) // Space
+        alphaKeys[idx++].bounds.set(x, y, x + punctW, y + rowHeight - mv * 2) // ,
+        x += punctW + mh * 2
+        alphaKeys[idx++].bounds.set(x, y, x + spaceW, y + rowHeight - mv * 2) // Space
         x += spaceW + mh * 2
-        alphaKeys[32].bounds.set(x, y, x + dotW, y + rowHeight - mv * 2) // .
-        x += dotW + mh * 2
-        alphaKeys[33].bounds.set(x, y, x + enterW, y + rowHeight - mv * 2) // Enter
+        alphaKeys[idx++].bounds.set(x, y, x + punctW, y + rowHeight - mv * 2) // .
+        x += punctW + mh * 2
+        alphaKeys[idx].bounds.set(x, y, x + enterW, y + rowHeight - mv * 2) // Enter
     }
 
-    private fun measureSymbols(width: Int, rowHeight: Float, mh: Float, mv: Float) {
+    private fun measureSymbols(width: Int, topOffset: Float, rowHeight: Float, mh: Float, mv: Float) {
         val kw10 = (width - mh * 20) / 10f
         var x = mh
-        var y = mv
+        var y = topOffset + mv
         for (i in 0 until 10) {
             symbolKeys[i].bounds.set(x, y, x + kw10, y + rowHeight - mv * 2)
             x += kw10 + mh * 2
         }
         x = mh
-        y = rowHeight + mv
+        y = topOffset + rowHeight + mv
         for (i in 10 until 20) {
             symbolKeys[i].bounds.set(x, y, x + kw10, y + rowHeight - mv * 2)
             x += kw10 + mh * 2
         }
 
-        // Row 2: Shift/More (1.4x), 7 keys, Backspace (1.4x)
         val specialW = kw10 * 1.4f
         val middleW = (width - specialW * 2 - mh * 18) / 7f
-        y = rowHeight * 2 + mv
+        y = topOffset + rowHeight * 2 + mv
         x = mh
         symbolKeys[20].bounds.set(x, y, x + specialW, y + rowHeight - mv * 2)
         x += specialW + mh * 2
@@ -274,48 +348,46 @@ class KeyboardLayout(private val theme: KeyboardTheme) {
         }
         symbolKeys[28].bounds.set(x, y, x + specialW, y + rowHeight - mv * 2)
 
-        // Row 3: ABC, Emoji, ,, Space, ., Enter
-        y = rowHeight * 3 + mv
-        val sideKeyW = kw10 * 1.4f
-        val smallKeyW = kw10 * 0.9f
-        val enterW = kw10 * 1.4f
-        val commaW = kw10 * 0.9f
-        val dotW = kw10 * 0.9f
+        y = topOffset + rowHeight * 3 + mv
+        val sideKeyW = kw10 * 1.35f
+        val smallKeyW = kw10 * 0.85f
+        val enterW = kw10 * 1.35f
+        val commaW = kw10 * 0.85f
+        val dotW = kw10 * 0.85f
         val spaceW = width - (sideKeyW + smallKeyW + commaW + dotW + enterW + mh * 12)
 
         x = mh
-        symbolKeys[29].bounds.set(x, y, x + sideKeyW, y + rowHeight - mv * 2) // ABC
+        symbolKeys[29].bounds.set(x, y, x + sideKeyW, y + rowHeight - mv * 2)
         x += sideKeyW + mh * 2
-        symbolKeys[30].bounds.set(x, y, x + smallKeyW, y + rowHeight - mv * 2) // Emoji
+        symbolKeys[30].bounds.set(x, y, x + smallKeyW, y + rowHeight - mv * 2)
         x += smallKeyW + mh * 2
-        symbolKeys[31].bounds.set(x, y, x + commaW, y + rowHeight - mv * 2) // ,
+        symbolKeys[31].bounds.set(x, y, x + commaW, y + rowHeight - mv * 2)
         x += commaW + mh * 2
-        symbolKeys[32].bounds.set(x, y, x + spaceW, y + rowHeight - mv * 2) // Space
+        symbolKeys[32].bounds.set(x, y, x + spaceW, y + rowHeight - mv * 2)
         x += spaceW + mh * 2
-        symbolKeys[33].bounds.set(x, y, x + dotW, y + rowHeight - mv * 2) // .
+        symbolKeys[33].bounds.set(x, y, x + dotW, y + rowHeight - mv * 2)
         x += dotW + mh * 2
-        symbolKeys[34].bounds.set(x, y, x + enterW, y + rowHeight - mv * 2) // Enter
+        symbolKeys[34].bounds.set(x, y, x + enterW, y + rowHeight - mv * 2)
     }
 
-    private fun measureSymbolShift(width: Int, rowHeight: Float, mh: Float, mv: Float) {
+    private fun measureSymbolShift(width: Int, topOffset: Float, rowHeight: Float, mh: Float, mv: Float) {
         val kw10 = (width - mh * 20) / 10f
         var x = mh
-        var y = mv
+        var y = topOffset + mv
         for (i in 0 until 10) {
             symbolShiftKeys[i].bounds.set(x, y, x + kw10, y + rowHeight - mv * 2)
             x += kw10 + mh * 2
         }
         x = mh
-        y = rowHeight + mv
+        y = topOffset + rowHeight + mv
         for (i in 10 until 20) {
             symbolShiftKeys[i].bounds.set(x, y, x + kw10, y + rowHeight - mv * 2)
             x += kw10 + mh * 2
         }
 
-        // Row 2: Shift/123 (1.5x), 6 keys, Backspace (1.5x)
         val specialW = kw10 * 1.5f
         val middleW = (width - specialW * 2 - mh * 16) / 6f
-        y = rowHeight * 2 + mv
+        y = topOffset + rowHeight * 2 + mv
         x = mh
         symbolShiftKeys[20].bounds.set(x, y, x + specialW, y + rowHeight - mv * 2)
         x += specialW + mh * 2
@@ -325,13 +397,12 @@ class KeyboardLayout(private val theme: KeyboardTheme) {
         }
         symbolShiftKeys[27].bounds.set(x, y, x + specialW, y + rowHeight - mv * 2)
 
-        // Row 3
-        y = rowHeight * 3 + mv
-        val sideKeyW = kw10 * 1.4f
-        val smallKeyW = kw10 * 0.9f
-        val enterW = kw10 * 1.4f
-        val angleLW = kw10 * 0.9f
-        val angleRW = kw10 * 0.9f
+        y = topOffset + rowHeight * 3 + mv
+        val sideKeyW = kw10 * 1.35f
+        val smallKeyW = kw10 * 0.85f
+        val enterW = kw10 * 1.35f
+        val angleLW = kw10 * 0.85f
+        val angleRW = kw10 * 0.85f
         val spaceW = width - (sideKeyW + smallKeyW + angleLW + angleRW + enterW + mh * 12)
 
         x = mh
@@ -348,11 +419,11 @@ class KeyboardLayout(private val theme: KeyboardTheme) {
         symbolShiftKeys[33].bounds.set(x, y, x + enterW, y + rowHeight - mv * 2)
     }
 
-    private fun measureNumpad(width: Int, rowHeight: Float, mh: Float, mv: Float) {
+    private fun measureNumpad(width: Int, topOffset: Float, rowHeight: Float, mh: Float, mv: Float) {
         val kw4 = (width - mh * 8) / 4f
         for (row in 0 until 4) {
             var x = mh
-            val y = row * rowHeight + mv
+            val y = topOffset + row * rowHeight + mv
             for (col in 0 until 4) {
                 val idx = row * 4 + col
                 if (idx < numpadKeys.size) {
@@ -363,14 +434,41 @@ class KeyboardLayout(private val theme: KeyboardTheme) {
         }
     }
 
+    /**
+     * Zero-dead-zone hit resolution (100% zero-allocation).
+     * Checks exact visual bounds first, then resolves gaps/margins to the nearest keycap edge.
+     */
     fun findKeyAt(x: Float, y: Float): KeyModel? {
         val keys = getActiveKeys()
+        if (keys.isEmpty()) return null
+        if (y < lastTopOffset) return null
+        if (lastWidth > 0 && (x < 0f || x > lastWidth.toFloat() || y > lastTopOffset + lastKeyAreaHeight)) {
+            return null
+        }
+
+        // 1. Exact visual hit check
         for (i in keys.indices) {
             if (keys[i].contains(x, y)) {
                 return keys[i]
             }
         }
-        return null
+
+        // 2. Nearest keycap edge fallback (eliminates gap & row-margin dead zones)
+        var bestKey: KeyModel? = null
+        var bestDistSq = Float.MAX_VALUE
+        for (i in keys.indices) {
+            val b = keys[i].bounds
+            val cx = x.coerceIn(b.left, b.right)
+            val cy = y.coerceIn(b.top, b.bottom)
+            val dx = x - cx
+            val dy = y - cy
+            val distSq = dx * dx + dy * dy
+            if (distSq < bestDistSq) {
+                bestDistSq = distSq
+                bestKey = keys[i]
+            }
+        }
+        return bestKey
     }
 
     fun updateShiftState(shifted: Boolean, caps: Boolean) {
@@ -378,15 +476,31 @@ class KeyboardLayout(private val theme: KeyboardTheme) {
         this.isCapsLock = caps
         val uppercase = shifted || caps
 
-        // Update labels for letter keys
-        for (i in 0 until 10) {
-            alphaKeys[i].label = if (uppercase) qwertyRows[0][i].uppercase() else qwertyRows[0][i]
+        val rows = activeLanguage.rows
+        val shiftedRows = activeLanguage.shiftedRows
+
+        var idx = numberRowCount
+        for (i in 0 until r0Count) {
+            alphaKeys[idx++].label = if (uppercase) {
+                shiftedRows?.get(0)?.get(i) ?: rows[0][i].uppercase()
+            } else {
+                rows[0][i]
+            }
         }
-        for (i in 10 until 19) {
-            alphaKeys[i].label = if (uppercase) qwertyRows[1][i - 10].uppercase() else qwertyRows[1][i - 10]
+        for (i in 0 until r1Count) {
+            alphaKeys[idx++].label = if (uppercase) {
+                shiftedRows?.get(1)?.get(i) ?: rows[1][i].uppercase()
+            } else {
+                rows[1][i]
+            }
         }
-        for (i in 20 until 27) {
-            alphaKeys[i].label = if (uppercase) qwertyRows[2][i - 20].uppercase() else qwertyRows[2][i - 20]
+        idx++ // skip Shift key
+        for (i in 0 until r2LetterCount) {
+            alphaKeys[idx++].label = if (uppercase) {
+                shiftedRows?.get(2)?.get(i) ?: rows[2][i].uppercase()
+            } else {
+                rows[2][i]
+            }
         }
     }
 }

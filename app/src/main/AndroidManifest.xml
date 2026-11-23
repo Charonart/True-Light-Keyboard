@@ -11,6 +11,18 @@
         android:supportsRtl="true"
         android:theme="@style/Theme.TrueLight">
 
+        <activity
+            android:name=".settings.SettingsActivity"
+            android:label="@string/app_name"
+            android:exported="true"
+            android:theme="@style/Theme.TrueLight.Settings"
+            android:windowSoftInputMode="adjustResize">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
         <service
             android:name=".TrueLightIME"
             android:label="@string/ime_name"

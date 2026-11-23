@@ -1,8 +1,8 @@
 package com.truelight.ime.engine
 
 /**
- * Static lookup tables and constants for Vietnamese character transformations.
- * Zero-allocation, high-performance lookup arrays.
+ * Static O(1) lookup tables and constants for Vietnamese character transformations.
+ * Zero-allocation, high-performance lookup arrays (~608 bytes total).
  */
 object VietnameseCharMap {
 
@@ -45,6 +45,44 @@ object VietnameseCharMap {
         charArrayOf('Y', 'Ý', 'Ỳ', 'Ỷ', 'Ỹ', 'Ỵ')
     )
 
+    // Packed metadata per char: 0 = not a Vietnamese vowel
+    // bits 0..3: row + 1 (1..12)
+    // bits 4..6: tone (0..5)
+    // bit  7   : isUpper (0x80)
+    private const val EXT_BASE = 0x1EA0
+    private const val EXT_SIZE = 0x60 // 0x1EA0..0x1EFF
+    private val META_LOW = ByteArray(0x0200)
+    private val META_EXT = ByteArray(EXT_SIZE)
+
+    init {
+        for (row in LOWER_VOWEL_MATRIX.indices) {
+            val lowerRow = LOWER_VOWEL_MATRIX[row]
+            val upperRow = UPPER_VOWEL_MATRIX[row]
+            for (tone in lowerRow.indices) {
+                putMeta(lowerRow[tone], ((row + 1) or (tone shl 4)).toByte())
+                putMeta(upperRow[tone], ((row + 1) or (tone shl 4) or 0x80).toByte())
+            }
+        }
+    }
+
+    private fun putMeta(c: Char, packed: Byte) {
+        val code = c.code
+        if (code < 0x0200) {
+            META_LOW[code] = packed
+        } else if (code in EXT_BASE until (EXT_BASE + EXT_SIZE)) {
+            META_EXT[code - EXT_BASE] = packed
+        }
+    }
+
+    private fun lookupMeta(c: Char): Int {
+        val code = c.code
+        return when {
+            code < 0x0200 -> META_LOW[code].toInt() and 0xFF
+            code in EXT_BASE until (EXT_BASE + EXT_SIZE) -> META_EXT[code - EXT_BASE].toInt() and 0xFF
+            else -> 0
+        }
+    }
+
     fun isToneKey(c: Char): Boolean {
         val lower = c.lowercaseChar()
         return lower == 's' || lower == 'f' || lower == 'r' || lower == 'x' || lower == 'j'
@@ -66,54 +104,34 @@ object VietnameseCharMap {
         return lower == 'a' || lower == 'w' || lower == 'e' || lower == 'o' || lower == 'd'
     }
 
-    fun isVowel(c: Char): Boolean {
-        return getVowelRow(c) >= 0
-    }
+    fun isVowel(c: Char): Boolean = lookupMeta(c) != 0
 
     /**
-     * Returns the vowel family index (0..11) or -1 if not a Vietnamese vowel.
+     * Returns the vowel family index (0..11) or -1 if not a Vietnamese vowel. O(1).
      */
     fun getVowelRow(c: Char): Int {
-        for (i in LOWER_VOWEL_MATRIX.indices) {
-            for (j in LOWER_VOWEL_MATRIX[i].indices) {
-                if (LOWER_VOWEL_MATRIX[i][j] == c || UPPER_VOWEL_MATRIX[i][j] == c) {
-                    return i
-                }
-            }
-        }
-        return -1
+        val m = lookupMeta(c)
+        return if (m == 0) -1 else (m and 0x0F) - 1
     }
 
     /**
-     * Returns the tone index (0..5) of the given char, or 0 if none.
+     * Returns the tone index (0..5) of the given char, or 0 if none. O(1).
      */
     fun getCharTone(c: Char): Int {
-        for (i in LOWER_VOWEL_MATRIX.indices) {
-            for (j in LOWER_VOWEL_MATRIX[i].indices) {
-                if (LOWER_VOWEL_MATRIX[i][j] == c || UPPER_VOWEL_MATRIX[i][j] == c) {
-                    return j
-                }
-            }
-        }
-        return TONE_NONE
+        val m = lookupMeta(c)
+        return if (m == 0) TONE_NONE else (m ushr 4) and 0x07
     }
 
     /**
-     * Replaces tone of vowel c with newTone (0..5), preserving casing.
+     * Replaces tone of vowel c with newTone (0..5), preserving casing. O(1).
      */
     fun applyTone(c: Char, newTone: Int): Char {
         if (newTone !in 0..5) return c
-        for (i in LOWER_VOWEL_MATRIX.indices) {
-            for (j in LOWER_VOWEL_MATRIX[i].indices) {
-                if (LOWER_VOWEL_MATRIX[i][j] == c) {
-                    return LOWER_VOWEL_MATRIX[i][newTone]
-                }
-                if (UPPER_VOWEL_MATRIX[i][j] == c) {
-                    return UPPER_VOWEL_MATRIX[i][newTone]
-                }
-            }
-        }
-        return c
+        val m = lookupMeta(c)
+        if (m == 0) return c
+        val row = (m and 0x0F) - 1
+        val isUpper = (m and 0x80) != 0
+        return if (isUpper) UPPER_VOWEL_MATRIX[row][newTone] else LOWER_VOWEL_MATRIX[row][newTone]
     }
 
     /**
@@ -121,32 +139,25 @@ object VietnameseCharMap {
      * Returns transformed char preserving tone and case, or null if no transform.
      */
     fun transformVowel(vowel: Char, key: Char): Char? {
-        val lowerV = vowel.lowercaseChar()
-        val lowerK = key.lowercaseChar()
-        val isUpper = vowel.isUpperCase()
-        val tone = getCharTone(vowel)
+        val m = lookupMeta(vowel)
+        if (m == 0) return null
+        val row = (m and 0x0F) - 1
+        val tone = (m ushr 4) and 0x07
+        val isUpper = (m and 0x80) != 0
 
-        val targetRow = when (lowerK) {
-            'a' -> when (getVowelRow(vowel)) {
-                0 -> 2 // a -> â
-                else -> null
-            }
-            'w' -> when (getVowelRow(vowel)) {
+        val targetRow = when (key.lowercaseChar()) {
+            'a' -> if (row == 0) 2 else -1 // a -> â
+            'w' -> when (row) {
                 0 -> 1  // a -> ă
                 6 -> 8  // o -> ơ
                 9 -> 10 // u -> ư
-                else -> null
+                else -> -1
             }
-            'e' -> when (getVowelRow(vowel)) {
-                3 -> 4 // e -> ê
-                else -> null
-            }
-            'o' -> when (getVowelRow(vowel)) {
-                6 -> 7 // o -> ô
-                else -> null
-            }
-            else -> null
-        } ?: return null
+            'e' -> if (row == 3) 4 else -1 // e -> ê
+            'o' -> if (row == 6) 7 else -1 // o -> ô
+            else -> -1
+        }
+        if (targetRow < 0) return null
 
         val matrix = if (isUpper) UPPER_VOWEL_MATRIX else LOWER_VOWEL_MATRIX
         return matrix[targetRow][tone]
@@ -156,10 +167,11 @@ object VietnameseCharMap {
      * Reverts a transformed vowel back to base (e.g. â -> a, ô -> o).
      */
     fun revertVowel(vowel: Char): Char? {
-        val row = getVowelRow(vowel)
-        val isUpper = vowel.isUpperCase()
-        val tone = getCharTone(vowel)
-        val matrix = if (isUpper) UPPER_VOWEL_MATRIX else LOWER_VOWEL_MATRIX
+        val m = lookupMeta(vowel)
+        if (m == 0) return null
+        val row = (m and 0x0F) - 1
+        val tone = (m ushr 4) and 0x07
+        val isUpper = (m and 0x80) != 0
 
         val baseRow = when (row) {
             1 -> 0 // ă -> a
@@ -168,9 +180,11 @@ object VietnameseCharMap {
             7 -> 6 // ô -> o
             8 -> 6 // ơ -> o
             10 -> 9 // ư -> u
-            else -> null
-        } ?: return null
+            else -> -1
+        }
+        if (baseRow < 0) return null
 
+        val matrix = if (isUpper) UPPER_VOWEL_MATRIX else LOWER_VOWEL_MATRIX
         return matrix[baseRow][tone]
     }
 }

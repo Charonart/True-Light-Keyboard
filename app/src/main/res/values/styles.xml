@@ -4,4 +4,6 @@
         <item name="android:windowBackground">@android:color/transparent</item>
         <item name="android:colorBackground">@color/bg_keyboard</item>
     </style>
+
+    <style name="Theme.TrueLight.Settings" parent="android:Theme.DeviceDefault.NoActionBar" />
 </resources>

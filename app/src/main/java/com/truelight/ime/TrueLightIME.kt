@@ -1,57 +1,141 @@
 package com.truelight.ime
 
+import android.content.Intent
+import android.content.SharedPreferences
+import android.content.res.Configuration
+import android.graphics.Color
 import android.inputmethodservice.InputMethodService
+import android.os.Build
+import android.text.InputType
 import android.view.View
+import android.view.WindowInsetsController
 import android.view.inputmethod.EditorInfo
 import com.truelight.ime.bridge.InputConnectionBroker
-import com.truelight.ime.engine.TelexFsmEngine
+import com.truelight.ime.clipboard.ClipboardHistoryManager
+import com.truelight.ime.config.KeyboardPrefs
+import com.truelight.ime.engine.InputEngine
+import com.truelight.ime.engine.SimpleWordEngine
+import com.truelight.ime.lang.LanguageRegistry
+import com.truelight.ime.lang.LanguageSpec
+import com.truelight.ime.settings.SettingsActivity
+import com.truelight.ime.suggest.SuggestionManager
 import com.truelight.ime.ui.KeyboardCanvasView
 
 /**
- * True Light Keyboard - Ultra-lightweight, zero-allocation Android IME.
+ * True Light Keyboard - Ultra-lightweight, zero-allocation, global Android IME.
  *
- * Core Objectives:
- * - APK Size < 1.5 MB
- * - Operating RAM < 20 MB
- * - Response Latency < 15ms
- * - 100% Pure Kotlin/Java stdlib, ZERO external dependencies (No AndroidX)
- * - 0 Internet Permission
+ * Defaults to English (US); additional Group 1 languages (Vietnamese Telex/VNI,
+ * French, German, Spanish, Russian, Korean) and offline dictionaries are managed in Settings.
  */
-class TrueLightIME : InputMethodService(), KeyboardCanvasView.OnKeyboardActionListener {
+class TrueLightIME : InputMethodService(),
+    KeyboardCanvasView.OnKeyboardActionListener,
+    SharedPreferences.OnSharedPreferenceChangeListener {
 
-    private lateinit var keyboardView: KeyboardCanvasView
+    private var keyboardView: KeyboardCanvasView? = null
+    private lateinit var prefs: KeyboardPrefs
+    private lateinit var suggestionManager: SuggestionManager
+    private lateinit var clipboardManager: ClipboardHistoryManager
     private val broker = InputConnectionBroker()
-    private val fsmEngine = TelexFsmEngine()
+
+    private var activeLanguage: LanguageSpec = LanguageRegistry.EN_US
+    private var activeEngine: InputEngine = SimpleWordEngine()
 
     override fun onCreate() {
         super.onCreate()
+        prefs = KeyboardPrefs(this)
+        suggestionManager = SuggestionManager(this)
+        clipboardManager = ClipboardHistoryManager(this)
+        clipboardManager.setEnabled(prefs.clipboardEnabled)
+        prefs.prefs.registerOnSharedPreferenceChangeListener(this)
+        loadLanguageAndSuggestions()
+    }
+
+    override fun onDestroy() {
+        prefs.prefs.unregisterOnSharedPreferenceChangeListener(this)
+        clipboardManager.setEnabled(false)
+        suggestionManager.configure(activeLanguage.dictKey, suggestionsOn = false, autoCorrectOn = false)
+        super.onDestroy()
     }
 
     override fun onCreateInputView(): View {
-        keyboardView = KeyboardCanvasView(this)
-        keyboardView.actionListener = this
-        return keyboardView
+        val view = KeyboardCanvasView(this)
+        view.actionListener = this
+        view.suggestionManager = suggestionManager
+        view.clipboardManager = clipboardManager
+        keyboardView = view
+        applySettingsToView()
+        return view
     }
 
     override fun onStartInputView(info: EditorInfo, restarting: Boolean) {
         super.onStartInputView(info, restarting)
 
-        // Reset composing state
-        fsmEngine.reset()
+        activeEngine.reset()
         broker.updateTarget(currentInputConnection, info)
+        suggestionManager.updateEditorPrivacy(info)
+        loadLanguageAndSuggestions()
 
-        // Auto-detect numeric fields and switch to Numpad layout
+        val view = keyboardView ?: return
+        view.currentImeAction = info.imeOptions and EditorInfo.IME_MASK_ACTION
+        applySettingsToView()
+
         if (broker.shouldUseNumpad()) {
-            keyboardView.switchToNumpad()
+            view.switchToNumpad()
         } else {
-            keyboardView.switchToAlpha()
+            view.switchToAlpha()
         }
+        updateAutoCaps()
     }
 
     override fun onFinishInputView(finishingInput: Boolean) {
         super.onFinishInputView(finishingInput)
         broker.finishComposingText()
-        fsmEngine.reset()
+        activeEngine.reset()
+        suggestionManager.clearSuggestions()
+        suggestionManager.clearUndo()
+    }
+
+    override fun onConfigurationChanged(newConfig: Configuration) {
+        super.onConfigurationChanged(newConfig)
+        keyboardView?.refreshTheme(this, prefs.themeMode, prefs.customCssEnabled, prefs.customCss)
+        updateNavigationBarColor()
+    }
+
+    override fun onSharedPreferenceChanged(sharedPreferences: SharedPreferences?, key: String?) {
+        when (key) {
+            KeyboardPrefs.KEY_KEYBOARD_HEIGHT_DP -> {
+                keyboardView?.applyHeightOnly(prefs.keyboardHeightDp)
+            }
+            KeyboardPrefs.KEY_DICT_REVISION -> {
+                suggestionManager.forceReload()
+                keyboardView?.invalidate()
+            }
+            KeyboardPrefs.KEY_HISTORY_REVISION -> {
+                keyboardView?.clearEmojiHistoryCache()
+                clipboardManager.clear()
+                keyboardView?.invalidate()
+            }
+            KeyboardPrefs.KEY_THEME_MODE,
+            KeyboardPrefs.KEY_CUSTOM_CSS,
+            KeyboardPrefs.KEY_CUSTOM_CSS_ENABLED -> {
+                keyboardView?.refreshTheme(this, prefs.themeMode, prefs.customCssEnabled, prefs.customCss)
+                updateNavigationBarColor()
+            }
+            KeyboardPrefs.KEY_CLIPBOARD_ENABLED -> {
+                clipboardManager.setEnabled(prefs.clipboardEnabled)
+                keyboardView?.invalidate()
+            }
+            KeyboardPrefs.KEY_AUTO_CAPS -> {
+                updateAutoCaps()
+            }
+            KeyboardPrefs.KEY_DOUBLE_SPACE_PERIOD -> {
+                // Read dynamically on Space press; no layout rebuild needed
+            }
+            else -> {
+                loadLanguageAndSuggestions()
+                applySettingsToView()
+            }
+        }
     }
 
     override fun onUpdateSelection(
@@ -64,14 +148,100 @@ class TrueLightIME : InputMethodService(), KeyboardCanvasView.OnKeyboardActionLi
     ) {
         super.onUpdateSelection(oldSelStart, oldSelEnd, newSelStart, newSelEnd, candidatesStart, candidatesEnd)
 
-        // If cursor moved outside the active composing range, finish composing
-        // to prevent cursor hopping bugs in WebViews & hybrid frameworks
-        if (candidatesStart >= 0 && candidatesEnd >= 0) {
-            if (newSelStart < candidatesStart || newSelEnd > candidatesEnd) {
-                if (fsmEngine.length() > 0) {
-                    broker.finishComposingText()
-                    fsmEngine.reset()
-                }
+        if (activeEngine.length() > 0) {
+            val composingCleared = candidatesStart < 0 && candidatesEnd < 0
+            val cursorMovedOutside = newSelStart != candidatesEnd || newSelEnd != candidatesEnd
+            if (composingCleared || cursorMovedOutside) {
+                broker.finishComposingText()
+                activeEngine.reset()
+                suggestionManager.clearSuggestions()
+                keyboardView?.invalidate()
+            }
+        }
+        updateAutoCaps()
+    }
+
+    private fun loadLanguageAndSuggestions() {
+        val langSpec = LanguageRegistry.getById(prefs.activeLanguageId)
+        val modernTone = prefs.vietnameseModernTone
+
+        if (langSpec.id != activeLanguage.id) {
+            activeLanguage = langSpec
+            activeEngine = langSpec.createEngine(modernTone)
+        } else {
+            // Update Vietnamese tone placement dynamically if toggled in Settings
+            when (val eng = activeEngine) {
+                is com.truelight.ime.engine.TelexFsmEngine -> eng.modernTonePlacement = modernTone
+                is com.truelight.ime.engine.VniFsmEngine -> eng.modernTonePlacement = modernTone
+            }
+        }
+
+        suggestionManager.configure(
+            dictKey = activeLanguage.dictKey,
+            suggestionsOn = prefs.suggestionsEnabled,
+            autoCorrectOn = prefs.autoCorrectEnabled
+        )
+    }
+
+    private fun applySettingsToView() {
+        val view = keyboardView ?: return
+        view.applyConfig(
+            context = this,
+            themeMode = prefs.themeMode,
+            customCssEnabled = prefs.customCssEnabled,
+            customCss = prefs.customCss,
+            heightDp = prefs.keyboardHeightDp,
+            showNumberRow = prefs.showNumberRow,
+            showSubLabels = prefs.showSubLabels,
+            longPressSymbols = prefs.longPressSymbols,
+            haptic = prefs.hapticEnabled,
+            languageSpec = activeLanguage,
+            multipleLanguages = prefs.enabledLanguages.size > 1
+        )
+        updateNavigationBarColor()
+    }
+
+    private fun updateAutoCaps() {
+        val view = keyboardView ?: return
+        if (!prefs.autoCapsEnabled) {
+            view.setAutoShift(false)
+            return
+        }
+        val info = currentInputEditorInfo
+        val ic = currentInputConnection
+        if (info == null || ic == null || info.inputType == InputType.TYPE_NULL) {
+            view.setAutoShift(false)
+            return
+        }
+        val capsMode = ic.getCursorCapsMode(info.inputType)
+        view.setAutoShift(capsMode != 0)
+    }
+
+    @Suppress("DEPRECATION")
+    private fun updateNavigationBarColor() {
+        val view = keyboardView ?: return
+        val win = window?.window ?: return
+        val bgColor = view.theme.colorBgKeyboard
+        win.navigationBarColor = bgColor
+
+        val luminance = (0.2126 * Color.red(bgColor) +
+            0.7152 * Color.green(bgColor) +
+            0.0722 * Color.blue(bgColor)) / 255.0
+        val isLight = luminance > 0.5
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            val controller = win.insetsController
+            if (controller != null) {
+                val mask = WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS
+                controller.setSystemBarsAppearance(if (isLight) mask else 0, mask)
+            }
+        } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val decor = win.decorView
+            val flags = decor.systemUiVisibility
+            decor.systemUiVisibility = if (isLight) {
+                flags or View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR
+            } else {
+                flags and View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR.inv()
             }
         }
     }
@@ -79,52 +249,130 @@ class TrueLightIME : InputMethodService(), KeyboardCanvasView.OnKeyboardActionLi
     // --- OnKeyboardActionListener Implementation ---
 
     override fun onChar(c: Char) {
-        if (keyboardView.layout.isVietnamese && c.isLetter() && !broker.isDirectDispatch()) {
-            val result = fsmEngine.processChar(c)
+        suggestionManager.clearUndo()
+        val canProcess = !broker.isDirectDispatch() &&
+            (c.isLetter() || (activeEngine.acceptsDigits && c.isDigit() && activeEngine.length() > 0) || c == '\'')
+
+        if (canProcess) {
+            val result = activeEngine.processChar(c)
             if (result.isWordTerminated) {
-                broker.finishComposingText()
-                broker.commitText(c.toString(), 1)
+                if (result.text.isNotEmpty()) {
+                    broker.finishComposingText()
+                    suggestionManager.learnCommittedWord(result.text)
+                }
+                suggestionManager.clearSuggestions()
+
+                // If word terminated due to MAX_WORD_LENGTH overflow on a valid word char,
+                // start a fresh composing token with the incoming character.
+                val retry = if (c.isLetter() || c == '\'') activeEngine.processChar(c) else null
+                if (retry != null && !retry.isWordTerminated) {
+                    val composingActive = broker.setComposingText(retry.text, 1)
+                    if (!composingActive) {
+                        activeEngine.reset()
+                        suggestionManager.clearSuggestions()
+                    } else {
+                        suggestionManager.updateForWord(retry.text)
+                    }
+                } else {
+                    broker.commitCharWithSmartPunctuation(c)
+                }
             } else {
                 val composingActive = broker.setComposingText(result.text, 1)
-                if (!composingActive && broker.isDirectDispatch()) {
-                    // Target editor refused composing and fell back to direct commit
-                    fsmEngine.reset()
+                if (!composingActive) {
+                    activeEngine.reset()
+                    suggestionManager.clearSuggestions()
+                } else {
+                    suggestionManager.updateForWord(result.text)
                 }
             }
         } else {
-            if (fsmEngine.length() > 0) {
+            if (activeEngine.length() > 0) {
+                val typed = activeEngine.getComposingText()
                 broker.finishComposingText()
-                fsmEngine.reset()
+                activeEngine.reset()
+                suggestionManager.learnCommittedWord(typed)
             }
-            broker.commitText(c.toString(), 1)
+            suggestionManager.clearSuggestions()
+            broker.commitCharWithSmartPunctuation(c)
         }
+        keyboardView?.invalidate()
     }
 
     override fun onSpace() {
-        broker.handleSpace(fsmEngine)
+        broker.handleSpace(activeEngine, suggestionManager, prefs.doubleSpacePeriodEnabled)
+        updateAutoCaps()
+        keyboardView?.invalidate()
     }
 
     override fun onBackspace() {
-        broker.handleBackspace(fsmEngine)
+        broker.handleBackspace(activeEngine, suggestionManager)
+        updateAutoCaps()
+        keyboardView?.invalidate()
+    }
+
+    override fun onDeleteWord() {
+        broker.handleDeleteWord(activeEngine, suggestionManager)
+        updateAutoCaps()
+        keyboardView?.invalidate()
+    }
+
+    override fun onMoveCursor(delta: Int) {
+        broker.moveCursor(delta, activeEngine, suggestionManager)
+        updateAutoCaps()
+        keyboardView?.invalidate()
     }
 
     override fun onEnter() {
-        val isShiftPressed = keyboardView.layout.isShifted
-        broker.handleEnter(isShiftPressed, fsmEngine)
+        val isShiftPressed = keyboardView?.layout?.isShifted == true
+        broker.handleEnter(isShiftPressed, activeEngine, suggestionManager)
+        updateAutoCaps()
+        keyboardView?.invalidate()
     }
 
     override fun onEmoji(emoji: String) {
-        if (fsmEngine.length() > 0) {
+        if (activeEngine.length() > 0) {
             broker.finishComposingText()
-            fsmEngine.reset()
+            activeEngine.reset()
+            suggestionManager.clearSuggestions()
         }
+        suggestionManager.clearUndo()
         broker.commitText(emoji, 1)
+        keyboardView?.invalidate()
     }
 
     override fun onLanguageToggle() {
-        if (fsmEngine.length() > 0) {
+        if (activeEngine.length() > 0) {
             broker.finishComposingText()
-            fsmEngine.reset()
+            activeEngine.reset()
+            suggestionManager.clearSuggestions()
         }
+        prefs.cycleNextLanguage()
+        loadLanguageAndSuggestions()
+        applySettingsToView()
+    }
+
+    override fun onOpenSettings() {
+        val intent = Intent(this, SettingsActivity::class.java).apply {
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        startActivity(intent)
+    }
+
+    override fun onSuggestionSelected(word: String) {
+        broker.commitSuggestion(word, activeEngine, suggestionManager)
+        updateAutoCaps()
+        keyboardView?.invalidate()
+    }
+
+    override fun onClipSelected(text: String) {
+        if (activeEngine.length() > 0) {
+            broker.finishComposingText()
+            activeEngine.reset()
+            suggestionManager.clearSuggestions()
+        }
+        suggestionManager.clearUndo()
+        broker.commitText(text, 1)
+        updateAutoCaps()
+        keyboardView?.invalidate()
     }
 }

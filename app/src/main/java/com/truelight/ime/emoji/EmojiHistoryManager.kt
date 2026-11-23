@@ -54,6 +54,11 @@ class EmojiHistoryManager(context: Context) {
         saveRecents()
     }
 
+    fun clearHistory() {
+        recents.clear()
+        prefs.edit().remove(KEY_RECENTS).apply()
+    }
+
     private fun saveRecents() {
         val sb = StringBuilder()
         for (i in recents.indices) {

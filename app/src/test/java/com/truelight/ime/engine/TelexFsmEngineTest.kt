@@ -1,6 +1,8 @@
 package com.truelight.ime.engine
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 
@@ -78,5 +80,80 @@ class TelexFsmEngineTest {
         typeWord("hoa")
         engine.handleBackspace()
         assertEquals("ho", engine.getComposingText())
+    }
+
+    @Test
+    fun testModernTonePlacementOption() {
+        engine.modernTonePlacement = true
+        assertEquals("hoà", typeWord("hoaf"))
+        assertEquals("hoè", typeWord("hoef"))
+        assertEquals("thuý", typeWord("thuys"))
+        assertEquals("toán", typeWord("toans"))
+    }
+
+    @Test
+    fun testCompoundUuHornAndReversion() {
+        assertEquals("lưu", typeWord("luuw"))
+        assertEquals("hưu", typeWord("huuw"))
+        assertEquals("cứu", typeWord("cuuws"))
+        assertEquals("cứu", typeWord("cuusw"))
+        assertEquals("luuw", typeWord("luuww"))
+    }
+
+    @Test
+    fun testEnglishAndLoanwordProtection() {
+        assertEquals("new", typeWord("new"))
+        assertEquals("view", typeWord("view"))
+        assertEquals("java", typeWord("java"))
+        assertEquals("level", typeWord("level"))
+        assertEquals("decide", typeWord("decide"))
+        assertEquals("tomato", typeWord("tomato"))
+        assertEquals("pokemon", typeWord("pokemon"))
+        // Legitimate Vietnamese shortcuts remain intact
+        assertEquals("như", typeWord("nhw"))
+        assertEquals("đương", typeWord("duongwd"))
+        // Multi-syllable loanword with tone-key letter 'r' after V-C-V ("came" + "r" + "a")
+        assertEquals("camera", typeWord("camera"))
+    }
+
+    @Test
+    fun testLongWordOverflowTerminatesCleanly() {
+        engine.reset()
+        val chunk = "b".repeat(62)
+        for (c in chunk) {
+            val res = engine.processChar(c)
+            assertTrue(res.consumed)
+            assertFalse(res.isWordTerminated)
+        }
+        assertEquals(62, engine.length())
+
+        // 63rd letter must terminate cleanly with the 62-char chunk instead of wiping it
+        val overflowRes = engine.processChar('c')
+        assertFalse(overflowRes.consumed)
+        assertTrue(overflowRes.isWordTerminated)
+        assertEquals(chunk, overflowRes.text)
+        assertTrue(engine.isEmpty())
+
+        // Re-feeding the incoming character starts a fresh composing token
+        val freshRes = engine.processChar('c')
+        assertTrue(freshRes.consumed)
+        assertFalse(freshRes.isWordTerminated)
+        assertEquals("c", freshRes.text)
+    }
+
+    @Test
+    fun testBackspaceResetsLastToneKey() {
+        assertEquals("toán", typeWord("toans"))
+        // Backspace removes 'n', leaving open syllable "tóa" (tone re-positioned) and clearing lastToneKey
+        assertTrue(engine.handleBackspace())
+        assertEquals("tóa", engine.getComposingText())
+
+        // Pressing 's' once after backspace re-applies tone instead of immediately reverting
+        val afterFirstS = engine.processChar('s')
+        assertEquals("tóa", afterFirstS.text)
+
+        // Pressing 's' a second time now reverts tone to literal 's'
+        val afterSecondS = engine.processChar('s')
+        assertEquals("toas", afterSecondS.text)
     }
 }
