@@ -32,6 +32,11 @@ class TrueLightIME : InputMethodService(),
     KeyboardCanvasView.OnKeyboardActionListener,
     SharedPreferences.OnSharedPreferenceChangeListener {
 
+    companion object {
+        @Volatile
+        var isKeyboardVisible: Boolean = false
+    }
+
     private var keyboardView: KeyboardCanvasView? = null
     private lateinit var prefs: KeyboardPrefs
     private lateinit var suggestionManager: SuggestionManager
@@ -51,7 +56,19 @@ class TrueLightIME : InputMethodService(),
         loadLanguageAndSuggestions()
     }
 
+    private fun setKeyboardVisibility(visible: Boolean) {
+        if (isKeyboardVisible != visible) {
+            isKeyboardVisible = visible
+            try {
+                contentResolver.notifyChange(PrefsProvider.CONTENT_URI, null)
+            } catch (_: Exception) {
+                // Ignore if resolver is unavailable during teardown
+            }
+        }
+    }
+
     override fun onDestroy() {
+        setKeyboardVisibility(false)
         prefs.prefs.unregisterOnSharedPreferenceChangeListener(this)
         clipboardManager.setEnabled(false)
         suggestionManager.configure(activeLanguage.dictKey, suggestionsOn = false, autoCorrectOn = false)
@@ -70,6 +87,7 @@ class TrueLightIME : InputMethodService(),
 
     override fun onStartInputView(info: EditorInfo, restarting: Boolean) {
         super.onStartInputView(info, restarting)
+        setKeyboardVisibility(true)
 
         activeEngine.reset()
         broker.updateTarget(currentInputConnection, info)
@@ -88,8 +106,14 @@ class TrueLightIME : InputMethodService(),
         updateAutoCaps()
     }
 
+    override fun onWindowShown() {
+        super.onWindowShown()
+        setKeyboardVisibility(true)
+    }
+
     override fun onFinishInputView(finishingInput: Boolean) {
         super.onFinishInputView(finishingInput)
+        setKeyboardVisibility(false)
         broker.finishComposingText()
         activeEngine.reset()
         suggestionManager.clearSuggestions()
@@ -98,6 +122,7 @@ class TrueLightIME : InputMethodService(),
 
     override fun onWindowHidden() {
         super.onWindowHidden()
+        setKeyboardVisibility(false)
         broker.finishComposingText()
         activeEngine.reset()
         suggestionManager.clearSuggestions()

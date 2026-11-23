@@ -1,101 +1,136 @@
-﻿# True Light - Bộ Gõ Bàn Phím Android Siêu Nhẹ (Ultra-Lightweight IME)
+﻿<div align="center">
 
-## 1. Giới thiệu tổng quan
-True Light là bộ gõ bàn phím tiếng Việt và ký tự siêu tối ưu cho hệ điều hành Android, được thiết kế theo triết lý tối giản tài nguyên:
-- **Dung lượng APK**: < 1.5 MB.
-- **RAM hoạt động**: < 20 MB trong mọi kịch bản.
-- **Độ trễ phản hồi**: < 15ms (Zero garbage collection latency).
-- **100% Kotlin/Java thuần**: Không sử dụng AndroidX, không EmojiCompat, không thư viện ngoài.
-- **Bảo mật tuyệt đối**: 0 quyền Internet (`android.permission.INTERNET` hoàn toàn không tồn tại trong `AndroidManifest.xml`).
+# True Light Keyboard
 
----
+**An ultra-lightweight, privacy-first, single-canvas Android keyboard.**
 
-## 2. Kiến trúc kỹ thuật cốt lõi
+[![Android CI](https://github.com/Charonart/True-Light-Keyboard/actions/workflows/ci.yml/badge.svg)](https://github.com/Charonart/True-Light-Keyboard/actions/workflows/ci.yml)
+[![Latest Release](https://img.shields.io/github/v/release/Charonart/True-Light-Keyboard?label=release&color=blue)](https://github.com/Charonart/True-Light-Keyboard/releases/latest)
+[![Android API](https://img.shields.io/badge/Android-API%2021%2B-3DDC84?logo=android&logoColor=white)](https://github.com/Charonart/True-Light-Keyboard/releases)
+[![IME Offline](https://img.shields.io/badge/IME%20Process-100%25%20Offline-2ea44f)](#architecture--privacy)
 
-### 2.1. Đồ họa Canvas duy nhất (Single Canvas View - Zero-Allocation onDraw)
-- Toàn bộ giao diện bàn phím được vẽ trực tiếp trên một `View` duy nhất (`KeyboardCanvasView`).
-- **Zero Allocation**: Tất cả `Paint`, `RectF`, `Path`, font metrics đều được khởi tạo và cấu hình tĩnh trước (`KeyboardTheme`).
-- Không phát sinh đối tượng mới trong hàm `onDraw(Canvas)` -> Không kích hoạt Garbage Collector (GC), triệt tiêu giật lag khung hình.
+*Zero-allocation Canvas rendering • Isolated Material 3 Settings • Multi-language Group 1 • Custom CSS-like Themes*
 
-### 2.2. Xử lý InputConnection bất đồng bộ (InputConnectionBroker)
-Giải quyết triệt để 4 vấn đề kinh điển của bàn phím Android:
-1. **Thanh địa chỉ Chrome & Trình duyệt Web**:
-   - Mọi thao tác đều được bọc trong cặp `ic.beginBatchEdit()` và `ic.endBatchEdit()`.
-   - Phím Space: Luôn gọi `ic.finishComposingText()` chốt từ trước khi gọi `ic.commitText( , 1)`. Điều này ngăn chặn hoàn toàn lỗi lặp ký tự (ví dụ `tim` thành `ttimm`) hoặc nuốt mất âm cuối khi gõ nhanh trên Chromium.
-2. **Game & Nền tảng lai (Flutter, React Native, Unity)**:
-   - Khi `EditorInfo.inputType == EditorInfo.TYPE_NULL` (0) hoặc `setComposingText` trả về false: Bàn phím tự động chuyển sang chế độ **Direct Key Dispatch**, gửi `KeyEvent` trực tiếp (`KEYCODE_...`) hoặc `commitText` không qua composing region.
-   - Tuyệt đối không can thiệp lệch offset composing region để tránh hiện tượng con trỏ nhảy về đầu dòng.
-3. **App Chat (Zalo, Messenger, Telegram) - Xử lý phím Enter**:
-   - Phân tích `EditorInfo.imeOptions`: Trích xuất `actionId` (`IME_ACTION_SEND`, `IME_ACTION_SEARCH`, `IME_ACTION_GO`, `IME_ACTION_DONE`, `IME_ACTION_NEXT`).
-   - Kiểm tra `TYPE_TEXT_FLAG_MULTI_LINE` và `IME_FLAG_NO_ENTER_ACTION`. Nếu là ô nhập nhiều dòng không có action cụ thể: Gửi ký tự xuống dòng `\n`.
-   - Hỗ trợ tổ hợp **Shift + Enter**: Luôn luôn là xuống dòng (`\n`), phục vụ nhu cầu soạn tin nhắn nhiều dòng trên Zalo, Facebook Messenger và Telegram.
-4. **Bàn phím số Numpad to rõ**:
-   - Tự động nhận diện trường số qua `TYPE_CLASS_NUMBER`, `TYPE_CLASS_PHONE`, `TYPE_CLASS_DATETIME` và chuyển sang layout Numpad với phím bấm to, rõ ràng.
-
-### 2.3. Cỗ máy trạng thái hữu hạn Telex (TelexFsmEngine)
-- Sử dụng mảng ký tự tĩnh `CharArray(64)` và ma trận nguyên âm `VietnameseCharMap`.
-- Đặt dấu thanh chuẩn quy cách mới: `hòa`, `hòe`, `thúy`, `chuối`, `đường`.
-- Xử lý hoàn tác / thoát dấu: Gõ lại phím dấu để thoát dấu (`toas` -> `toá`, gõ tiếp `s` -> `toas`).
-- Phím `z` xóa dấu tức thì (`báo` + `z` -> `bao`).
-
-### 2.4. Native Emoji Canvas Panel
-- Sử dụng bảng mã tĩnh Unicode 15.0 phân bổ theo 9 danh mục chuẩn: Biểu cảm, Con người, Động vật, Ẩm thực, Du lịch, Hoạt động, Đồ vật, Biểu tượng, Cờ.
-- Render trực tiếp bằng font hệ thống `/system/fonts/NotoColorEmoji.ttf`.
-- Quản lý 30 emoji gần đây (`EmojiHistoryManager`) lưu qua SharedPreferences.
-- Vẽ trực tiếp trên cùng Canvas View, hỗ trợ cuộn mượt không cấp phát bộ nhớ.
+</div>
 
 ---
 
-## 3. Cấu trúc thư mục dự án
+## Why True Light?
+
+Most modern Android keyboards ship heavy UI frameworks, embedded browsers, SQLite telemetry databases, and background services—consuming **150+ MB of RAM** even when idle.
+
+**True Light** is built from the ground up with two strict engineering principles:
+
+1. **Zero-Allocation Single-Canvas IME (`com.truelight.ime`)**
+   The keyboard itself is rendered directly on a single native `View` using preallocated `Paint`, `RectF`, and `Path` objects—zero AndroidX, zero Material libraries, zero networking code, and **< 1 MB Dalvik heap**.
+2. **Process-Isolated Material Design 3 Settings (`com.truelight.ime:settings`)**
+   The settings app runs in its own isolated Android process (`:settings`) with full Material You Dynamic Color and an on-demand GitHub Releases updater. When you close Settings, Android reclaims 100% of its memory—adding **0 MB** to the keyboard process.
+
+---
+
+## Measured Footprint (Android API 37 Emulator, 1080×2400)
+
+| Metric (`dumpsys meminfo`) | True Light IME *(standalone)* | Gboard *(Release)* |
+| :--- | ---: | ---: |
+| **App Dalvik Heap** | **~0.9 MB** | **13.8 MB** *(~14× larger)* |
+| **Total PSS** *(Debug APK)* | **27.9 – 41.5 MB** | **166.9 MB** *(~4× larger)* |
+| **SQLite Databases** | **0** | **5 DBs (3.1 MB)** |
+| **View Hierarchy** | **24 views** | **345 views** |
+| **Release APK Size** | **~1.4 MB** | **> 80 MB** |
+
+> **Tip:** Signed **Release** builds strip debug symbols & unminified `.dex` pages via R8 and use noticeably less RAM than `-debug.apk` test builds.
+
+---
+
+## Features
+
+### Fast, Ergonomic Typing
+- **Multi-touch 2-thumb rollover** & Shift+letter chording (no dropped keystrokes during fast typing).
+- **Zero dead zones** with nearest-key hit testing across gaps and row edges.
+- **Gestures:** Spacebar horizontal glide to move cursor, Backspace left-swipe to delete whole words, long-press keys for symbols, and configurable **long-press Enter/Search → Open Emoji** (or Newline).
+- **Smart Typing:** Auto-capitalization, double-space period (`. `), smart punctuation, selection-safe & emoji-grapheme-safe Backspace, and Chromium/WebView/Flutter/Unity `InputConnection` compatibility.
+- **Offline Clipboard History:** Last 10 text clips stored strictly in RAM, automatically skipping sensitive/password clips on Android 13+.
+
+### Global-First Multi-Language Support (Group 1)
+Defaults to **English (US)** out of the box. Add or switch languages anytime offline in Settings:
+- **English (US)** — QWERTY *(default)*
+- **Vietnamese** — **Telex** & **VNI** *(supports both Old `hòa, thúy` and Modern `hoà, thuý` tone rules, plus loanword protection)*
+- **French** — AZERTY
+- **German** — QWERTZ
+- **Spanish** — QWERTY (`ñ`)
+- **Russian** — Cyrillic (ЙЦУКЕН)
+- **Korean** — 2-Bulsik Hangul automaton
+- *Planned (Group 2):* Optional offline packs for Chinese (Pinyin) & Japanese (Kana→Kanji).
+
+### Lightweight Text Suggestions & Auto-Correct
+- **2 independent toggles:**
+  - **Text suggestions:** Turn off to unload dictionaries completely (`0 MB` RAM).
+  - **Auto-correct:** 1-edit-distance typo fixing on Space with instant **Backspace Undo** and English code-switching guard.
+- Supports offline user word learning and importing custom `.txt` wordlists via Android Storage Access Framework (zero storage permissions).
+
+### 12-Category Lazy-Loaded Emoji Panel
+- Standard 9 Unicode Emoji categories + **Recents** + **Kaomoji** (`¯\_(ツ)_/¯`, 54 expressions) + **Math & Tech Symbols** (`→ ≠ ≤ ≥ ∞ ∑`, 96 symbols).
+- Lazy-loaded only when opened and automatically released on keyboard hide.
+
+### Material Design 3 Settings & Custom CSS-Like Keyboard Themes
+- **Android 12+ Material You Dynamic Color** (plus Dark, AMOLED Black, and Light presets).
+- **Custom CSS-like Style Sheet editor** with 1-tap presets (*Precision Dark, Paper Light, AMOLED Pure, Nord Slate*) parsed once into native `Canvas` paints—**0 WebView, 0 MB extra RAM**.
+- **Live Keyboard RAM Pill** showing real-time `Active` vs `Standby` keyboard memory.
+- **In-App GitHub Updater** (inside `:settings` only) with download progress and **SHA-256** verification.
+
+---
+
+## Architecture & Privacy
+
+```text
+┌─────────────────────────────────────────┐       Binder IPC        ┌──────────────────────────────────────┐
+│  com.truelight.ime  (Main IME Process)  │ ◄─────────────────────► │  com.truelight.ime:settings          │
+│  • 100% Pure Android Framework          │     PrefsProvider       │  • Material Design 3 Settings UI     │
+│  • ZERO AndroidX / ZERO Network code    │   (exported = false)    │  • Live RAM Monitor & CSS Editor     │
+│  • Single-Canvas View (0-alloc onDraw)  │                         │  • On-demand GitHub Releases Updater │
+│  • Telex / VNI / Hangul / Trie Engine   │                         │  • Reclaimed when Settings closes    │
+└─────────────────────────────────────────┘                         └──────────────────────────────────────┘
 ```
-D:\1._Project\True_Light\
-├── build.gradle
-├── settings.gradle
-├── gradle.properties
-├── README.md
-├── gradle/wrapper/
-│   └── gradle-wrapper.properties
-└── app/
-    ├── build.gradle
-    ├── proguard-rules.pro
-    └── src/
-        ├── test/java/com/truelight/ime/engine/
-        │   └── TelexFsmEngineTest.kt
-        └── main/
-            ├── AndroidManifest.xml
-            ├── res/
-            │   ├── drawable/
-            │   │   └── ic_launcher.xml
-            │   ├── values/
-            │   │   ├── colors.xml
-            │   │   ├── strings.xml
-            │   │   └── styles.xml
-            │   └── xml/
-            │       └── method.xml
-            └── java/com/truelight/ime/
-                ├── TrueLightIME.kt
-                ├── bridge/
-                │   └── InputConnectionBroker.kt
-                ├── engine/
-                │   ├── TelexFsmEngine.kt
-                │   └── VietnameseCharMap.kt
-                ├── emoji/
-                │   ├── EmojiCanvasPanel.kt
-                │   ├── EmojiData.kt
-                │   └── EmojiHistoryManager.kt
-                └── ui/
-                    ├── KeyModel.kt
-                    ├── KeyboardCanvasView.kt
-                    ├── KeyboardLayout.kt
-                    └── theme/
-                        └── KeyboardTheme.kt
-```
+
+CI enforces on every commit and release that the IME process (`TrueLightIME.kt`, `engine/`, `bridge/`, `ui/`, `emoji/`, `suggest/`, `clipboard/`, `lang/`, `config/`) contains **zero** networking or AndroidX/Material imports.
 
 ---
 
-## 4. Hướng dẫn đóng gói và triển khai
-Dự án có thể build trực tiếp bằng Android Studio hoặc dòng lệnh:
+## Installation
+
+1. Download the latest APK from [**GitHub Releases**](https://github.com/Charonart/True-Light-Keyboard/releases/latest).
+2. Install the APK and open **True Light**.
+3. Follow the 2-step setup on the Home tab: **Enable Keyboard** → **Select Default**.
+
+---
+
+## Building from Source
+
+### Requirements
+- **JDK 25** (or Android Studio bundled JBR 25)
+- **Gradle 9.1.0** (included via wrapper)
+- **Android SDK Platform 34**
+
+### Commands
 ```bash
-./gradlew assembleRelease
+# Run unit tests
+./gradlew testDebugUnitTest
+
+# Build Debug & Release APKs
+./gradlew assembleDebug assembleRelease
 ```
-File APK xuất ra tại: `app/build/outputs/apk/release/app-release.apk` với dung lượng dự kiến < 1.0 MB.
+
+### Automated Signed Releases (GitHub Actions)
+Push a tag matching `v*` (e.g. `git tag v1.2.1 && git push origin v1.2.1`) to trigger [`.github/workflows/release.yml`](.github/workflows/release.yml).
+
+To produce signed release APKs, add these 4 repository secrets under **Settings → Secrets and variables → Actions**:
+- `KEYSTORE_BASE64` — Base64-encoded `.jks` keystore
+- `KEYSTORE_PASSWORD` — Keystore password
+- `KEY_ALIAS` — Signing key alias
+- `KEY_PASSWORD` — Signing key password
+
+---
+
+## License
+
+This project is open source. See repository settings for licensing details.

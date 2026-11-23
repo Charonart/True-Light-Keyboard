@@ -40,6 +40,7 @@ class PrefsProvider : ContentProvider() {
         const val KEY_IME_DALVIK_KB = "ime_dalvik_kb"
         const val KEY_IME_NATIVE_KB = "ime_native_kb"
         const val KEY_IME_PID = "ime_pid"
+        const val KEY_IME_ACTIVE = "ime_active"
 
         const val EXTRA_VALUE = "value"
         const val EXTRA_CONTENT = "content"
@@ -225,6 +226,7 @@ class PrefsProvider : ContentProvider() {
         bundle.putInt(KEY_IME_DALVIK_KB, memInfo.dalvikPss)
         bundle.putInt(KEY_IME_NATIVE_KB, memInfo.nativePss)
         bundle.putInt(KEY_IME_PID, Process.myPid())
+        bundle.putBoolean(KEY_IME_ACTIVE, com.truelight.ime.TrueLightIME.isKeyboardVisible)
     }
 
     override fun query(

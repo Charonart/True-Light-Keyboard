@@ -24,7 +24,8 @@ class RemotePrefsClient(context: Context) {
         val privateDirtyKb: Int,
         val dalvikPssKb: Int,
         val nativePssKb: Int,
-        val imePid: Int
+        val imePid: Int,
+        val isKeyboardActive: Boolean = false
     )
 
     private val appContext = context.applicationContext
@@ -91,9 +92,13 @@ class RemotePrefsClient(context: Context) {
             privateDirtyKb = bundle?.getInt(PrefsProvider.KEY_IME_PRIVATE_DIRTY_KB, 0) ?: 0,
             dalvikPssKb = bundle?.getInt(PrefsProvider.KEY_IME_DALVIK_KB, 0) ?: 0,
             nativePssKb = bundle?.getInt(PrefsProvider.KEY_IME_NATIVE_KB, 0) ?: 0,
-            imePid = bundle?.getInt(PrefsProvider.KEY_IME_PID, -1) ?: -1
+            imePid = bundle?.getInt(PrefsProvider.KEY_IME_PID, -1) ?: -1,
+            isKeyboardActive = bundle?.getBoolean(PrefsProvider.KEY_IME_ACTIVE, false) ?: false
         )
     }
+
+    val isKeyboardActive: Boolean
+        get() = getSnapshot()?.getBoolean(PrefsProvider.KEY_IME_ACTIVE, false) ?: false
 
     var enabledLanguages: List<String>
         get() {

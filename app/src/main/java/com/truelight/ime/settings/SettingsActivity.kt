@@ -3,6 +3,7 @@ package com.truelight.ime.settings
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Intent
+import android.content.pm.ApplicationInfo
 import android.content.res.ColorStateList
 import android.content.res.Configuration
 import android.database.ContentObserver
@@ -66,6 +67,7 @@ class SettingsActivity : AppCompatActivity() {
     companion object {
         private const val REQ_IMPORT_DICT = 1001
         private const val RAM_REFRESH_INTERVAL_MS = 2500L
+        private const val RAM_DEBOUNCE_MS = 250L
         private const val REF_AOSP_MB = 55
         private const val REF_GBOARD_MB = 167
         private const val RAM_SCALE_MAX_MB = 180
@@ -140,28 +142,34 @@ class SettingsActivity : AppCompatActivity() {
             mainHandler.postDelayed(this, RAM_REFRESH_INTERVAL_MS)
         }
     }
+    private val debouncedRamRefreshRunnable = Runnable {
+        refreshRamMonitor()
+    }
 
     private val prefsObserver = object : ContentObserver(mainHandler) {
         override fun onChange(selfChange: Boolean) {
             remotePrefs.invalidateCache()
             syncUiFromPrefs()
             refreshRamMonitor()
+            mainHandler.removeCallbacks(debouncedRamRefreshRunnable)
+            mainHandler.postDelayed(debouncedRamRefreshRunnable, RAM_DEBOUNCE_MS)
         }
     }
 
-    // Tab views
+    // Tab views & top bar
     private lateinit var tabPages: Array<View>
     private lateinit var bottomNav: BottomNavigationView
+    private lateinit var topRamPill: TextView
 
-    // Home Tab live telemetry & setup views
+    // Home Tab live memory & setup views
     private lateinit var ramHeadlineView: TextView
-    private lateinit var ramPidChip: TextView
-    private lateinit var ramPssMetricView: TextView
-    private lateinit var ramDalvikMetricView: TextView
-    private lateinit var ramNativeMetricView: TextView
+    private lateinit var ramStatusChip: TextView
     private lateinit var ramLiveBarLabel: TextView
     private lateinit var ramLiveIndicator: LinearProgressIndicator
     private lateinit var ramFeatureSummaryView: TextView
+    private lateinit var ramDetailsToggleView: TextView
+    private lateinit var ramDetailsTextView: TextView
+    private var isRamDetailsExpanded = false
 
     private lateinit var statusEnabledChip: TextView
     private lateinit var statusDefaultChip: TextView
@@ -246,6 +254,7 @@ class SettingsActivity : AppCompatActivity() {
             // Ignore
         }
         mainHandler.removeCallbacks(ramRefreshRunnable)
+        mainHandler.removeCallbacks(debouncedRamRefreshRunnable)
     }
 
     @Deprecated("Deprecated in Java")
@@ -425,36 +434,37 @@ class SettingsActivity : AppCompatActivity() {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
             setBackgroundColor(colSurface)
-            setPadding(dp(20), dp(14), dp(16), dp(14))
+            setPadding(dp(16), dp(12), dp(14), dp(12))
         }
 
-        val titleCol = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
-        }
-        titleCol.addView(TextView(this).apply {
+        bar.addView(TextView(this).apply {
             text = "True Light"
-            textSize = 22f
+            textSize = 20f
+            maxLines = 1
             typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
             letterSpacing = -0.015f
             setTextColor(colOnSurface)
+            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
+                marginEnd = dp(8)
+            }
         })
-        titleCol.addView(TextView(this).apply {
-            text = "Pure Canvas IME"
-            textSize = 12f
-            setTextColor(colOnSurfaceVariant)
-        })
-        bar.addView(titleCol)
 
-        bar.addView(createChip("v${getAppVersionName()}", colSurfaceContainer, colOnSurfaceVariant, colOutlineVariant).apply {
+        topRamPill = createChip("○ -- MB • Standby", colSurfaceContainer, colOnSurfaceVariant, colOutlineVariant).apply {
+            maxLines = 1
+            setPadding(dp(9), dp(4), dp(9), dp(4))
             layoutParams = LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT
             ).apply {
                 marginEnd = dp(6)
             }
+        }
+        bar.addView(topRamPill)
+
+        bar.addView(createChip("v${getAppVersionName()}", colSurfaceContainer, colOnSurfaceVariant, colOutlineVariant).apply {
+            maxLines = 1
+            setPadding(dp(8), dp(4), dp(8), dp(4))
         })
-        bar.addView(createChip("IME Offline", colOkBg, colOkText))
 
         return bar
     }
@@ -587,7 +597,7 @@ class SettingsActivity : AppCompatActivity() {
 
     private fun createSwitchRow(
         title: String,
-        subtitle: String,
+        subtitle: String? = null,
         checked: Boolean,
         onToggle: (Boolean) -> Unit
     ): Pair<LinearLayout, MaterialSwitch> {
@@ -608,12 +618,14 @@ class SettingsActivity : AppCompatActivity() {
             typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
             setTextColor(colOnSurface)
         })
-        textCol.addView(TextView(this).apply {
-            text = subtitle
-            textSize = 12.5f
-            setTextColor(colOnSurfaceVariant)
-            setPadding(0, dp(2), 0, 0)
-        })
+        if (!subtitle.isNullOrEmpty()) {
+            textCol.addView(TextView(this).apply {
+                text = subtitle
+                textSize = 12.5f
+                setTextColor(colOnSurfaceVariant)
+                setPadding(0, dp(2), 0, 0)
+            })
+        }
         val sw = MaterialSwitch(this).apply {
             isChecked = checked
             setOnCheckedChangeListener { _, isChecked ->
@@ -631,7 +643,7 @@ class SettingsActivity : AppCompatActivity() {
     }
 
     // =========================================================================
-    // TAB 1 — HOME (LIVE IME RAM TELEMETRY + SETUP & SANDBOX)
+    // TAB 1 — HOME (KEYBOARD MEMORY + SETUP & TEST)
     // =========================================================================
 
     private fun buildHomeTab(): View {
@@ -642,12 +654,9 @@ class SettingsActivity : AppCompatActivity() {
     }
 
     private fun buildRamTelemetryCard(): View {
-        val (card, body) = createCard(
-            title = "Live IME RAM Telemetry",
-            subtitle = "Measured strictly inside the TrueLightIME keyboard process."
-        )
+        val (card, body) = createCard(title = "Keyboard Memory")
 
-        // Headline PSS + PID badge
+        // Headline RAM + Active/Standby chip
         val headlineRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
@@ -658,106 +667,97 @@ class SettingsActivity : AppCompatActivity() {
             textSize = 30f
             typeface = Typeface.MONOSPACE
             setTextColor(colPrimary)
-            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
-        }
-        ramPidChip = createChip("IME PID: --", colSurfaceContainer, colOnSurfaceVariant, colOutlineVariant)
-        headlineRow.addView(ramHeadlineView)
-        headlineRow.addView(ramPidChip)
-        body.addView(headlineRow)
-
-        // 3 compact metric tiles: IME PSS | App Dalvik | Native/HWUI
-        val metricsRow = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
             layoutParams = LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT
             ).apply {
-                bottomMargin = dp(14)
+                marginEnd = dp(10)
             }
         }
-        val pssTile = createMetricTile("IME PSS", "-- MB")
-        ramPssMetricView = pssTile.second
-        val dalvikTile = createMetricTile("App Dalvik", "-- MB")
-        ramDalvikMetricView = dalvikTile.second
-        val nativeTile = createMetricTile("Native/HWUI", "-- MB")
-        ramNativeMetricView = nativeTile.second
+        ramStatusChip = createChip("Standby", colSurfaceContainer, colOnSurfaceVariant, colOutlineVariant)
+        headlineRow.addView(ramHeadlineView)
+        headlineRow.addView(ramStatusChip)
+        body.addView(headlineRow)
 
-        metricsRow.addView(pssTile.first.apply {
-            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
-                marginEnd = dp(8)
-            }
-        })
-        metricsRow.addView(dalvikTile.first.apply {
-            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
-                marginEnd = dp(8)
-            }
-        })
-        metricsRow.addView(nativeTile.first.apply {
-            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
-        })
-        body.addView(metricsRow)
-
-        // M3 LinearProgressIndicator comparison bars
-        val liveBar = buildProgressBarRow("True Light IME (Live)", "-- MB", colPrimary, 10)
+        // 3 clean comparison bars
+        val liveBar = buildProgressBarRow("True Light", "--.- MB", colPrimary, 10)
         ramLiveBarLabel = liveBar.second
         ramLiveIndicator = liveBar.third
         body.addView(liveBar.first)
 
         body.addView(
-            buildProgressBarRow("AOSP Native (Ref)", "~55 MB", colOnSurfaceVariant, REF_AOSP_MB).first
+            buildProgressBarRow("Android Default", "~55 MB", colOnSurfaceVariant, REF_AOSP_MB).first
         )
         body.addView(
-            buildProgressBarRow("Gboard (Ref)", "~167 MB", colError, REF_GBOARD_MB).first
+            buildProgressBarRow("Gboard", "~167 MB", colError, REF_GBOARD_MB).first
         )
 
-        // Feature RAM summary banner
-        ramFeatureSummaryView = TextView(this).apply {
-            textSize = 12f
-            typeface = Typeface.MONOSPACE
-            setTextColor(colOnSecondaryContainer)
-            background = pillBg(colSecondaryContainer, 14)
-            setPadding(dp(12), dp(10), dp(12), dp(10))
-            setLineSpacing(dp(3).toFloat(), 1f)
+        // Compact 1-line feature summary + collapsed-by-default "Details ▾" toggle
+        val footerRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
             layoutParams = LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT
             ).apply {
-                topMargin = dp(4)
+                topMargin = dp(2)
             }
         }
-        body.addView(ramFeatureSummaryView)
-
-        // Process isolation callout
-        body.addView(TextView(this).apply {
-            text = "Settings runs in its own isolated :settings process, so Material Design 3 adds 0 MB to the keyboard IME process."
-            textSize = 12f
+        ramFeatureSummaryView = TextView(this).apply {
+            text = "Suggestions: On  •  Clipboard: On"
+            textSize = 12.5f
             setTextColor(colOnSurfaceVariant)
-            setPadding(0, dp(10), 0, 0)
-        })
+            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
+                marginEnd = dp(8)
+            }
+        }
+        ramDetailsToggleView = TextView(this).apply {
+            text = "Details ▾"
+            textSize = 12.5f
+            typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+            setTextColor(colPrimary)
+            setPadding(dp(6), dp(4), dp(2), dp(4))
+            setOnClickListener {
+                isRamDetailsExpanded = !isRamDetailsExpanded
+                ramDetailsTextView.visibility = if (isRamDetailsExpanded) View.VISIBLE else View.GONE
+                text = if (isRamDetailsExpanded) "Details ▴" else "Details ▾"
+            }
+        }
+        footerRow.addView(ramFeatureSummaryView)
+        footerRow.addView(ramDetailsToggleView)
+        body.addView(footerRow)
+
+        // Collapsible single monospace technical line (collapsed by default)
+        ramDetailsTextView = TextView(this).apply {
+            text = "PSS -- MB • Heap -- MB • Native -- MB • PID --"
+            textSize = 11f
+            typeface = Typeface.MONOSPACE
+            setTextColor(colOnSurfaceVariant)
+            visibility = View.GONE
+            setPadding(0, dp(6), 0, 0)
+        }
+        body.addView(ramDetailsTextView)
+
+        // Debug-only 1-line amber badge
+        val isDebugBuild = (applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE) != 0
+        if (isDebugBuild) {
+            body.addView(TextView(this).apply {
+                text = "Debug build — signed Release APK uses less RAM."
+                textSize = 11.5f
+                typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+                setTextColor(colWarnText)
+                background = pillBg(colWarnBg, 10)
+                setPadding(dp(10), dp(7), dp(10), dp(7))
+                layoutParams = LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT
+                ).apply {
+                    topMargin = dp(10)
+                }
+            })
+        }
 
         return card
-    }
-
-    private fun createMetricTile(label: String, initialValue: String): Pair<LinearLayout, TextView> {
-        val tile = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            background = pillBg(colSurfaceContainer, 14)
-            setPadding(dp(10), dp(10), dp(10), dp(10))
-        }
-        val valueTv = TextView(this).apply {
-            text = initialValue
-            textSize = 14.5f
-            typeface = Typeface.MONOSPACE
-            setTextColor(colOnSurface)
-        }
-        tile.addView(valueTv)
-        tile.addView(TextView(this).apply {
-            text = label
-            textSize = 11f
-            setTextColor(colOnSurfaceVariant)
-            setPadding(0, dp(2), 0, 0)
-        })
-        return tile to valueTv
     }
 
     private fun buildProgressBarRow(
@@ -813,10 +813,7 @@ class SettingsActivity : AppCompatActivity() {
     }
 
     private fun buildSetupAndSandboxCard(): View {
-        val (card, body) = createCard(
-            title = "Setup & Live Typing Sandbox",
-            subtitle = "Enable True Light, pick it as default, and test gestures live."
-        )
+        val (card, body) = createCard(title = "Setup & Test")
 
         val statusRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -850,7 +847,7 @@ class SettingsActivity : AppCompatActivity() {
                 bottomMargin = dp(14)
             }
         }
-        val btnEnable = createFilledButton("Enable Keyboard") {
+        val btnEnable = createFilledButton("Enable") {
             startActivity(Intent(Settings.ACTION_INPUT_METHOD_SETTINGS))
         }.apply {
             layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
@@ -872,7 +869,7 @@ class SettingsActivity : AppCompatActivity() {
             boxBackgroundMode = TextInputLayout.BOX_BACKGROUND_OUTLINE
             val corner = dp(14).toFloat()
             setBoxCornerRadii(corner, corner, corner, corner)
-            hint = "Test typing, spacebar glide, long-press Enter → Emoji..."
+            hint = "Tap to open keyboard & watch RAM ↑"
             layoutParams = LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT
@@ -903,10 +900,7 @@ class SettingsActivity : AppCompatActivity() {
     }
 
     private fun buildLanguagesCard(): View {
-        val (card, body) = createCard(
-            title = "Languages (Group 1 Offline)",
-            subtitle = "Defaults to English (US). Tap an added language to make it active."
-        )
+        val (card, body) = createCard(title = "Languages")
 
         languagesContainer = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -929,7 +923,7 @@ class SettingsActivity : AppCompatActivity() {
                 marginEnd = dp(8)
             }
         }
-        val btnImport = createOutlinedButton("Import Dict (.txt)") {
+        val btnImport = createOutlinedButton("Import Dict") {
             showImportDictionaryLanguagePicker()
         }.apply {
             layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
@@ -957,7 +951,7 @@ class SettingsActivity : AppCompatActivity() {
             layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
         }
         viCol.addView(TextView(this).apply {
-            text = "Vietnamese tone placement"
+            text = "Vietnamese tone"
             textSize = 14.5f
             typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
             setTextColor(colOnSurface)
@@ -975,14 +969,11 @@ class SettingsActivity : AppCompatActivity() {
     }
 
     private fun buildSuggestionsCard(): View {
-        val (card, body) = createCard(
-            title = "Text Suggestions",
-            subtitle = "Zero-allocation Trie engine. Turn OFF to unload dictionary (0 MB)."
-        )
+        val (card, body) = createCard(title = "Suggestions")
 
         val sugRow = createSwitchRow(
-            title = "Text suggestions (Gợi ý sửa)",
-            subtitle = "~1–2 MB RAM when ON • 0 MB when OFF.",
+            title = "Text suggestions",
+            subtitle = "Off = unload dictionary (0 MB)",
             checked = remotePrefs.suggestionsEnabled
         ) { isChecked ->
             remotePrefs.suggestionsEnabled = isChecked
@@ -1000,8 +991,8 @@ class SettingsActivity : AppCompatActivity() {
         body.addView(createDivider())
 
         val acRow = createSwitchRow(
-            title = "Auto-correct (Tự động sửa)",
-            subtitle = "Replace typos on Space. Press Backspace immediately to undo.",
+            title = "Auto-correct",
+            subtitle = "Fix typos on Space, Backspace undoes",
             checked = remotePrefs.autoCorrectEnabled
         ) { isChecked ->
             remotePrefs.autoCorrectEnabled = isChecked
@@ -1015,23 +1006,15 @@ class SettingsActivity : AppCompatActivity() {
     }
 
     private fun buildGesturesCard(): View {
-        val (card, body) = createCard(
-            title = "Gestures & Shortcuts",
-            subtitle = "Customize Enter long-press, bottom bar keys, and smart typing."
-        )
+        val (card, body) = createCard(title = "Typing & Shortcuts")
 
-        // Long-press Enter / Search segmented selector
+        // Long-press Enter segmented selector
         body.addView(TextView(this).apply {
-            text = "Long-press Enter / Search"
+            text = "Long-press Enter"
             textSize = 15f
             typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
             setTextColor(colOnSurface)
-        })
-        body.addView(TextView(this).apply {
-            text = "Choose what holding the Enter/Search key triggers."
-            textSize = 12.5f
-            setTextColor(colOnSurfaceVariant)
-            setPadding(0, dp(2), 0, dp(8))
+            setPadding(0, 0, 0, dp(8))
         })
 
         val segContainer = LinearLayout(this).apply {
@@ -1044,8 +1027,8 @@ class SettingsActivity : AppCompatActivity() {
             )
         }
         val segmentDefs = arrayOf(
-            "Open Emoji" to KeyboardPrefs.ENTER_LONG_PRESS_EMOJI,
-            "Newline (\\n)" to KeyboardPrefs.ENTER_LONG_PRESS_NEWLINE,
+            "Emoji" to KeyboardPrefs.ENTER_LONG_PRESS_EMOJI,
+            "Newline" to KeyboardPrefs.ENTER_LONG_PRESS_NEWLINE,
             "Off" to KeyboardPrefs.ENTER_LONG_PRESS_NONE
         )
         enterLongPressSegments = Array(segmentDefs.size) { idx ->
@@ -1067,8 +1050,8 @@ class SettingsActivity : AppCompatActivity() {
         body.addView(createDivider())
 
         val emojiKeyRow = createSwitchRow(
-            title = "Show Emoji key on bottom row",
-            subtitle = "Turn off for a wider Spacebar when using Long-press Enter → Emoji.",
+            title = "Emoji key on bottom row",
+            subtitle = "Off = wider spacebar",
             checked = remotePrefs.showEmojiKey
         ) { isChecked ->
             remotePrefs.showEmojiKey = isChecked
@@ -1080,7 +1063,7 @@ class SettingsActivity : AppCompatActivity() {
 
         val capsRow = createSwitchRow(
             title = "Auto-capitalization",
-            subtitle = "Capitalize the first word of each new sentence.",
+            subtitle = "Capitalize first word",
             checked = remotePrefs.autoCapsEnabled
         ) { remotePrefs.autoCapsEnabled = it }
         switchAutoCaps = capsRow.second
@@ -1089,8 +1072,8 @@ class SettingsActivity : AppCompatActivity() {
         body.addView(createDivider())
 
         val dspRow = createSwitchRow(
-            title = "Double-space period (. )",
-            subtitle = "Double-tap Space after a word to insert a period and space.",
+            title = "Double-space period",
+            subtitle = "Tap space twice for . ",
             checked = remotePrefs.doubleSpacePeriodEnabled
         ) { remotePrefs.doubleSpacePeriodEnabled = it }
         switchDoubleSpace = dspRow.second
@@ -1099,8 +1082,8 @@ class SettingsActivity : AppCompatActivity() {
         body.addView(createDivider())
 
         val clipRow = createSwitchRow(
-            title = "Clipboard history (10 items, RAM-only)",
-            subtitle = "Quick-paste recent clips from strip icon. Never written to disk.",
+            title = "Clipboard history",
+            subtitle = "Last 10 items, RAM-only",
             checked = remotePrefs.clipboardEnabled
         ) {
             remotePrefs.clipboardEnabled = it
@@ -1125,16 +1108,13 @@ class SettingsActivity : AppCompatActivity() {
     }
 
     private fun buildThemePresetsCard(): View {
-        val (card, body) = createCard(
-            title = "Theme Preset",
-            subtitle = "Material You adapts to your Android 12+ wallpaper automatically."
-        )
+        val (card, body) = createCard(title = "Theme")
 
         val presets = arrayOf(
-            "System Dynamic" to "Material You / Auto",
-            "Dark" to "Slate precision",
-            "AMOLED" to "Pure #000000 black",
-            "Light" to "Crisp paper white"
+            "Dynamic" to "Material You",
+            "Dark" to "Slate",
+            "AMOLED" to "Pure black",
+            "Light" to "Paper white"
         )
         val cardsList = ArrayList<MaterialCardView>(4)
         val titlesList = ArrayList<TextView>(4)
@@ -1198,14 +1178,11 @@ class SettingsActivity : AppCompatActivity() {
     }
 
     private fun buildCustomCssCard(): View {
-        val (card, body) = createCard(
-            title = "Custom CSS Style Sheet",
-            subtitle = "Fine-tune colors, radius, borders, shadows & font size (0 WebView, 0 MB)."
-        )
+        val (card, body) = createCard(title = "Custom CSS")
 
         val cssToggleRow = createSwitchRow(
-            title = "Enable custom CSS overrides",
-            subtitle = "Applied live over your selected theme preset.",
+            title = "Enable custom CSS",
+            subtitle = "Override theme colors & key style",
             checked = remotePrefs.customCssEnabled
         ) { isChecked ->
             remotePrefs.customCssEnabled = isChecked
@@ -1224,14 +1201,14 @@ class SettingsActivity : AppCompatActivity() {
                 topMargin = dp(12)
             }
         }
-        val btnEdit = createTonalButton("Edit CSS Style Sheet") {
+        val btnEdit = createTonalButton("Edit CSS") {
             showCssEditorDialog()
         }.apply {
             layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
                 marginEnd = dp(10)
             }
         }
-        cssStatusChip = createChip("CSS OFF", colSurfaceContainer, colOnSurfaceVariant, colOutlineVariant)
+        cssStatusChip = createChip("Off", colSurfaceContainer, colOnSurfaceVariant, colOutlineVariant)
         actionRow.addView(btnEdit)
         actionRow.addView(cssStatusChip)
         body.addView(actionRow)
@@ -1240,10 +1217,7 @@ class SettingsActivity : AppCompatActivity() {
     }
 
     private fun buildLayoutAndFeelCard(): View {
-        val (card, body) = createCard(
-            title = "Layout & Feel",
-            subtitle = "Adjust keycap height, dedicated number row, labels, and haptics."
-        )
+        val (card, body) = createCard(title = "Layout & Feel")
 
         // Height header + Material 3 Slider (180..300 step 5)
         val heightHeader = LinearLayout(this).apply {
@@ -1285,8 +1259,8 @@ class SettingsActivity : AppCompatActivity() {
         body.addView(createDivider())
 
         val numRow = createSwitchRow(
-            title = "Dedicated number row",
-            subtitle = "Show a fixed 1–0 row above letters with stable panel height.",
+            title = "Number row",
+            subtitle = "Fixed 1–0 row above letters",
             checked = remotePrefs.showNumberRow
         ) { remotePrefs.showNumberRow = it }
         switchNumberRow = numRow.second
@@ -1295,8 +1269,8 @@ class SettingsActivity : AppCompatActivity() {
         body.addView(createDivider())
 
         val subRow = createSwitchRow(
-            title = "Show key sub-labels",
-            subtitle = "Display subtle secondary symbols on keycaps.",
+            title = "Key sub-labels",
+            subtitle = "Show secondary symbols",
             checked = remotePrefs.showSubLabels
         ) { remotePrefs.showSubLabels = it }
         switchSubLabels = subRow.second
@@ -1305,8 +1279,8 @@ class SettingsActivity : AppCompatActivity() {
         body.addView(createDivider())
 
         val lpRow = createSwitchRow(
-            title = "Long-press for symbols",
-            subtitle = "Hold a letter key to insert its secondary symbol.",
+            title = "Long-press symbols",
+            subtitle = "Hold letter for symbol",
             checked = remotePrefs.longPressSymbols
         ) { remotePrefs.longPressSymbols = it }
         switchLongPress = lpRow.second
@@ -1316,7 +1290,6 @@ class SettingsActivity : AppCompatActivity() {
 
         val hapRow = createSwitchRow(
             title = "Haptic vibration",
-            subtitle = "Crisp tactile feedback on keypresses & swipe gestures.",
             checked = remotePrefs.hapticEnabled
         ) { remotePrefs.hapticEnabled = it }
         switchHaptic = hapRow.second
@@ -1333,16 +1306,13 @@ class SettingsActivity : AppCompatActivity() {
         val col = createTabColumn()
 
         // Privacy & Updates Card
-        val (privacyCard, privacyBody) = createCard(
-            title = "Privacy & Auto-Updates",
-            subtitle = "Keyboard IME process stays 100% offline. Updates run strictly in :settings."
-        )
+        val (privacyCard, privacyBody) = createCard(title = "Privacy & Updates")
 
-        // Highlight banner: IME Process 100% Offline
+        // Compact 2-line max offline privacy banner
         val verifiedBanner = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            background = pillBg(colOkBg, 16)
-            setPadding(dp(14), dp(14), dp(14), dp(14))
+            background = pillBg(colOkBg, 14)
+            setPadding(dp(14), dp(12), dp(14), dp(12))
             layoutParams = LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT
@@ -1351,45 +1321,23 @@ class SettingsActivity : AppCompatActivity() {
             }
         }
         verifiedBanner.addView(TextView(this).apply {
-            text = "Keyboard Process 100% Offline"
-            textSize = 15f
+            text = "Keyboard 100% Offline"
+            textSize = 14.5f
             typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
             setTextColor(colOkText)
         })
         verifiedBanner.addView(TextView(this).apply {
-            text = "TrueLightIME contains zero networking code — keystrokes can never leave your device. Network access exists only inside the isolated :settings process when you tap Check for Updates."
+            text = "Zero network code in the keyboard. Only manual update checks use internet."
             textSize = 12.5f
+            maxLines = 2
             setTextColor(colOkText)
             alpha = 0.9f
-            setPadding(0, dp(4), 0, 0)
+            setPadding(0, dp(3), 0, 0)
         })
         privacyBody.addView(verifiedBanner)
 
-        val metaRow = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            setPadding(0, 0, 0, dp(12))
-        }
-        metaRow.addView(createChip("Version v${getAppVersionName()}", colPrimaryContainer, colOnPrimaryContainer).apply {
-            layoutParams = LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT
-            ).apply {
-                marginEnd = dp(8)
-            }
-        })
-        metaRow.addView(createChip("Isolated :settings M3 UI", colSurfaceContainer, colOnSurfaceVariant, colOutlineVariant))
-        privacyBody.addView(metaRow)
-
-        privacyBody.addView(TextView(this).apply {
-            text = "Downloads the latest APK directly from GitHub Releases, verifies SHA-256 checksum, and opens the Android installer."
-            textSize = 12.5f
-            setTextColor(colOnSurfaceVariant)
-            setPadding(0, 0, 0, dp(12))
-        })
-
         lateinit var btnCheckUpdate: MaterialButton
-        btnCheckUpdate = createFilledButton("Check & Install Updates") {
+        btnCheckUpdate = createFilledButton("Check for Updates") {
             checkAndInstallUpdate(btnCheckUpdate)
         }.apply {
             layoutParams = LinearLayout.LayoutParams(
@@ -1401,7 +1349,7 @@ class SettingsActivity : AppCompatActivity() {
         }
         privacyBody.addView(btnCheckUpdate)
 
-        privacyBody.addView(createOutlinedButton("Open GitHub Releases Page") {
+        privacyBody.addView(createOutlinedButton("GitHub Releases") {
             openGitHubReleases()
         }.apply {
             layoutParams = LinearLayout.LayoutParams(
@@ -1412,20 +1360,17 @@ class SettingsActivity : AppCompatActivity() {
         col.addView(privacyCard)
 
         // Local Data Management Card
-        val (dataCard, dataBody) = createCard(
-            title = "Local Data & Storage",
-            subtitle = "All learned words and emoji recents stay strictly on-device. Clipboard history lives in RAM only."
-        )
+        val (dataCard, dataBody) = createCard(title = "Local Data")
 
-        dataBody.addView(createOutlinedButton("Clear learned words, clipboard & emoji history") {
+        dataBody.addView(createOutlinedButton("Clear history & learned words") {
             MaterialAlertDialogBuilder(this)
                 .setTitle("Clear local history?")
-                .setMessage("This will permanently erase learned words, custom imported dictionaries, clipboard history, and recent emojis.")
+                .setMessage("Erases learned words, imported dictionaries, clipboard, and recent emojis.")
                 .setPositiveButton("Clear") { _, _ ->
                     remotePrefs.clearAllUserData()
                     refreshLanguagesList()
                     refreshRamMonitor()
-                    Toast.makeText(this, "Cleared learned words, clipboard & emoji history", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(this, "Cleared local history", Toast.LENGTH_SHORT).show()
                 }
                 .setNegativeButton("Cancel", null)
                 .show()
@@ -1453,26 +1398,57 @@ class SettingsActivity : AppCompatActivity() {
 
     private fun refreshRamMonitor() {
         val stats = remotePrefs.getImeMemoryStats()
+        val hasReading = stats.totalPssKb > 0
         val totalMb = stats.totalPssKb / 1024f
         val dalvikMb = stats.dalvikPssKb / 1024f
         val nativeMb = stats.nativePssKb / 1024f
 
-        val totalStr = String.format(Locale.US, "%.1f MB", totalMb)
+        val totalStr = if (hasReading) String.format(Locale.US, "%.1f MB", totalMb) else "--.- MB"
+        val pillMbStr = if (hasReading) "${totalMb.roundToInt()} MB" else "-- MB"
+
+        // Top App Bar live RAM pill (always visible even when keyboard is open)
+        if (stats.isKeyboardActive) {
+            topRamPill.text = "● $pillMbStr • Active"
+            topRamPill.background = pillBg(colOkBg, 100)
+            topRamPill.setTextColor(colOkText)
+        } else {
+            topRamPill.text = "○ $pillMbStr • Standby"
+            topRamPill.background = pillBg(colSurfaceContainer, 100, colOutlineVariant)
+            topRamPill.setTextColor(colOnSurfaceVariant)
+        }
+
+        // Home card headline + inline status chip
         ramHeadlineView.text = totalStr
-        ramPidChip.text = if (stats.imePid > 0) "IME PID ${stats.imePid}" else "IME Standby"
-        ramPssMetricView.text = totalStr
-        ramDalvikMetricView.text = String.format(Locale.US, "%.1f MB", dalvikMb)
-        ramNativeMetricView.text = String.format(Locale.US, "%.1f MB", nativeMb)
+        if (stats.isKeyboardActive) {
+            ramStatusChip.text = "Active"
+            ramStatusChip.background = pillBg(colOkBg, 100)
+            ramStatusChip.setTextColor(colOkText)
+        } else {
+            ramStatusChip.text = "Standby"
+            ramStatusChip.background = pillBg(colSurfaceContainer, 100, colOutlineVariant)
+            ramStatusChip.setTextColor(colOnSurfaceVariant)
+        }
 
         ramLiveBarLabel.text = totalStr
-        ramLiveIndicator.progress = totalMb.roundToInt().coerceIn(2, RAM_SCALE_MAX_MB)
+        ramLiveIndicator.progress = if (hasReading) totalMb.roundToInt().coerceIn(2, RAM_SCALE_MAX_MB) else 0
 
-        val sugStatus = if (remotePrefs.suggestionsEnabled) "ON (~1.5 MB)" else "OFF (0 MB)"
-        val clipStatus = if (remotePrefs.clipboardEnabled) "ON (~0.1 MB)" else "OFF (0 MB)"
-        val langCount = remotePrefs.enabledLanguages.size
-        ramFeatureSummaryView.text =
-            "Suggestions: $sugStatus  •  Clipboard: $clipStatus\n" +
-            "Languages: $langCount active  •  Emoji: Lazy + Auto-freed"
+        val sugStatus = if (remotePrefs.suggestionsEnabled) "On" else "Off"
+        val clipStatus = if (remotePrefs.clipboardEnabled) "On" else "Off"
+        ramFeatureSummaryView.text = "Suggestions: $sugStatus  •  Clipboard: $clipStatus"
+
+        val pidText = if (stats.imePid > 0) stats.imePid.toString() else "--"
+        ramDetailsTextView.text = if (hasReading) {
+            String.format(
+                Locale.US,
+                "PSS %.1f MB • Heap %.1f MB • Native %.1f MB • PID %s",
+                totalMb,
+                dalvikMb,
+                nativeMb,
+                pidText
+            )
+        } else {
+            "PSS -- MB • Heap -- MB • Native -- MB • PID $pidText"
+        }
     }
 
     private fun refreshSetupStatus() {
@@ -1583,11 +1559,11 @@ class SettingsActivity : AppCompatActivity() {
 
     private fun updateCssStatusChip() {
         if (remotePrefs.customCssEnabled) {
-            cssStatusChip.text = "CSS Active"
+            cssStatusChip.text = "Active"
             cssStatusChip.background = pillBg(colOkBg, 100)
             cssStatusChip.setTextColor(colOkText)
         } else {
-            cssStatusChip.text = "CSS Off"
+            cssStatusChip.text = "Off"
             cssStatusChip.background = pillBg(colSurfaceContainer, 100, colOutlineVariant)
             cssStatusChip.setTextColor(colOnSurfaceVariant)
         }
@@ -1637,7 +1613,7 @@ class SettingsActivity : AppCompatActivity() {
                 setTextColor(if (isActive) colOnPrimaryContainer else colOnSurface)
             })
             val dictSubtitle = if (remotePrefs.hasCustomDictionary(spec.dictKey)) {
-                "${spec.nativeName} • Custom offline dict"
+                "${spec.nativeName} • Custom dict"
             } else {
                 spec.nativeName
             }
@@ -1869,14 +1845,14 @@ class SettingsActivity : AppCompatActivity() {
     private fun checkAndInstallUpdate(triggerButton: MaterialButton) {
         val currentVer = getAppVersionName()
         triggerButton.isEnabled = false
-        triggerButton.text = "Checking GitHub..."
+        triggerButton.text = "Checking..."
 
         Thread {
             val result = GitHubUpdater.checkLatestRelease(currentVer)
             runOnUiThread {
                 if (isFinishing || isDestroyed) return@runOnUiThread
                 triggerButton.isEnabled = true
-                triggerButton.text = "Check & Install Updates"
+                triggerButton.text = "Check for Updates"
 
                 when (result) {
                     is GitHubUpdater.CheckResult.UpdateAvailable -> {
@@ -1987,7 +1963,7 @@ class SettingsActivity : AppCompatActivity() {
                         } else {
                             Toast.makeText(
                                 this,
-                                "Allow 'Install unknown apps' for True Light, then tap Check & Install Updates again",
+                                "Allow 'Install unknown apps' for True Light, then tap Check for Updates again",
                                 Toast.LENGTH_LONG
                             ).show()
                         }
