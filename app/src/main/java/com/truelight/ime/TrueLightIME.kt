@@ -1,5 +1,6 @@
 package com.truelight.ime
 
+import android.content.ComponentCallbacks2
 import android.content.Intent
 import android.content.SharedPreferences
 import android.content.res.Configuration
@@ -13,11 +14,11 @@ import android.view.inputmethod.EditorInfo
 import com.truelight.ime.bridge.InputConnectionBroker
 import com.truelight.ime.clipboard.ClipboardHistoryManager
 import com.truelight.ime.config.KeyboardPrefs
+import com.truelight.ime.config.PrefsProvider
 import com.truelight.ime.engine.InputEngine
 import com.truelight.ime.engine.SimpleWordEngine
 import com.truelight.ime.lang.LanguageRegistry
 import com.truelight.ime.lang.LanguageSpec
-import com.truelight.ime.settings.SettingsActivity
 import com.truelight.ime.suggest.SuggestionManager
 import com.truelight.ime.ui.KeyboardCanvasView
 
@@ -93,6 +94,29 @@ class TrueLightIME : InputMethodService(),
         activeEngine.reset()
         suggestionManager.clearSuggestions()
         suggestionManager.clearUndo()
+    }
+
+    override fun onWindowHidden() {
+        super.onWindowHidden()
+        broker.finishComposingText()
+        activeEngine.reset()
+        suggestionManager.clearSuggestions()
+        suggestionManager.clearUndo()
+        keyboardView?.releaseTransientUiMemory()
+    }
+
+    override fun onTrimMemory(level: Int) {
+        super.onTrimMemory(level)
+        if (level >= ComponentCallbacks2.TRIM_MEMORY_UI_HIDDEN) {
+            keyboardView?.releaseTransientUiMemory()
+            if (::prefs.isInitialized && !prefs.suggestionsEnabled && ::suggestionManager.isInitialized) {
+                suggestionManager.configure(
+                    dictKey = activeLanguage.dictKey,
+                    suggestionsOn = false,
+                    autoCorrectOn = false
+                )
+            }
+        }
     }
 
     override fun onConfigurationChanged(newConfig: Configuration) {
@@ -196,7 +220,9 @@ class TrueLightIME : InputMethodService(),
             longPressSymbols = prefs.longPressSymbols,
             haptic = prefs.hapticEnabled,
             languageSpec = activeLanguage,
-            multipleLanguages = prefs.enabledLanguages.size > 1
+            multipleLanguages = prefs.enabledLanguages.size > 1,
+            longPressEnterAction = prefs.longPressEnterAction,
+            showEmojiKey = prefs.showEmojiKey
         )
         updateNavigationBarColor()
     }
@@ -329,6 +355,12 @@ class TrueLightIME : InputMethodService(),
         keyboardView?.invalidate()
     }
 
+    override fun onInsertNewline() {
+        broker.handleInsertNewline(activeEngine, suggestionManager)
+        updateAutoCaps()
+        keyboardView?.invalidate()
+    }
+
     override fun onEmoji(emoji: String) {
         if (activeEngine.length() > 0) {
             broker.finishComposingText()
@@ -347,12 +379,14 @@ class TrueLightIME : InputMethodService(),
             suggestionManager.clearSuggestions()
         }
         prefs.cycleNextLanguage()
+        contentResolver.notifyChange(PrefsProvider.CONTENT_URI, null)
         loadLanguageAndSuggestions()
         applySettingsToView()
     }
 
     override fun onOpenSettings() {
-        val intent = Intent(this, SettingsActivity::class.java).apply {
+        val intent = Intent().apply {
+            setClassName(this@TrueLightIME, "com.truelight.ime.settings.SettingsActivity")
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         }
         startActivity(intent)

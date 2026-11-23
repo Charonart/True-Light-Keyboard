@@ -24,6 +24,7 @@ class KeyboardLayout(private val theme: KeyboardTheme) {
     var isCapsLock = false
     var showNumberRow = false
     var showSubLabels = true
+    var showEmojiKey = true
 
     var activeLanguage: LanguageSpec = LanguageRegistry.EN_US
         private set
@@ -67,12 +68,22 @@ class KeyboardLayout(private val theme: KeyboardTheme) {
         }
     }
 
-    fun setDisplayOptions(numberRow: Boolean, subLabels: Boolean) {
-        val changed = (this.showNumberRow != numberRow)
+    fun setDisplayOptions(
+        numberRow: Boolean,
+        subLabels: Boolean,
+        emojiKey: Boolean = true
+    ) {
+        val numberRowChanged = (this.showNumberRow != numberRow)
+        val emojiKeyChanged = (this.showEmojiKey != emojiKey)
         this.showNumberRow = numberRow
         this.showSubLabels = subLabels
-        if (changed) {
+        this.showEmojiKey = emojiKey
+        if (numberRowChanged || emojiKeyChanged) {
             buildAlphaKeys()
+            if (emojiKeyChanged) {
+                buildSymbolKeys()
+                buildSymbolShiftKeys()
+            }
             if (isShifted || isCapsLock) {
                 updateShiftState(isShifted, isCapsLock)
             }
@@ -139,9 +150,11 @@ class KeyboardLayout(private val theme: KeyboardTheme) {
         }
         alphaKeys.add(KeyModel(code = KeyModel.CODE_DELETE, label = "⌫", type = KeyModel.TYPE_DELETE))
 
-        // Row 3 (7 balanced keys): ?123, Emoji, Lang/Settings, Comma, Space, Period, Enter
+        // Row 3 (6 or 7 balanced keys): ?123, [optional Emoji], Lang/Settings, Comma, Space, Period, Enter
         alphaKeys.add(KeyModel(code = KeyModel.CODE_SWITCH_SYMBOLS, label = "?123", type = KeyModel.TYPE_SWITCH_SYMBOLS))
-        alphaKeys.add(KeyModel(code = KeyModel.CODE_EMOJI, label = "", type = KeyModel.TYPE_EMOJI))
+        if (showEmojiKey) {
+            alphaKeys.add(KeyModel(code = KeyModel.CODE_EMOJI, label = "", type = KeyModel.TYPE_EMOJI))
+        }
         val langLabel = if (hasMultipleLanguages) activeLanguage.shortCode else "⚙"
         alphaKeys.add(KeyModel(code = KeyModel.CODE_SWITCH_LANG, label = langLabel, type = KeyModel.TYPE_SWITCH_LANG))
         alphaKeys.add(KeyModel(code = ','.code, label = ",", subLabel = "!", type = KeyModel.TYPE_NORMAL))
@@ -164,7 +177,9 @@ class KeyboardLayout(private val theme: KeyboardTheme) {
         symbolKeys.add(KeyModel(code = KeyModel.CODE_DELETE, label = "⌫", type = KeyModel.TYPE_DELETE))
 
         symbolKeys.add(KeyModel(code = KeyModel.CODE_SWITCH_ALPHA, label = "ABC", type = KeyModel.TYPE_SWITCH_ALPHA))
-        symbolKeys.add(KeyModel(code = KeyModel.CODE_EMOJI, label = "", type = KeyModel.TYPE_EMOJI))
+        if (showEmojiKey) {
+            symbolKeys.add(KeyModel(code = KeyModel.CODE_EMOJI, label = "", type = KeyModel.TYPE_EMOJI))
+        }
         symbolKeys.add(KeyModel(code = ','.code, label = ",", type = KeyModel.TYPE_NORMAL))
         symbolKeys.add(KeyModel(code = KeyModel.CODE_SPACE, label = activeLanguage.spaceLabel, type = KeyModel.TYPE_SPACE))
         symbolKeys.add(KeyModel(code = '.'.code, label = ".", type = KeyModel.TYPE_NORMAL))
@@ -185,7 +200,9 @@ class KeyboardLayout(private val theme: KeyboardTheme) {
         symbolShiftKeys.add(KeyModel(code = KeyModel.CODE_DELETE, label = "⌫", type = KeyModel.TYPE_DELETE))
 
         symbolShiftKeys.add(KeyModel(code = KeyModel.CODE_SWITCH_ALPHA, label = "ABC", type = KeyModel.TYPE_SWITCH_ALPHA))
-        symbolShiftKeys.add(KeyModel(code = KeyModel.CODE_EMOJI, label = "", type = KeyModel.TYPE_EMOJI))
+        if (showEmojiKey) {
+            symbolShiftKeys.add(KeyModel(code = KeyModel.CODE_EMOJI, label = "", type = KeyModel.TYPE_EMOJI))
+        }
         symbolShiftKeys.add(KeyModel(code = '<'.code, label = "<", type = KeyModel.TYPE_NORMAL))
         symbolShiftKeys.add(KeyModel(code = KeyModel.CODE_SPACE, label = activeLanguage.spaceLabel, type = KeyModel.TYPE_SPACE))
         symbolShiftKeys.add(KeyModel(code = '>'.code, label = ">", type = KeyModel.TYPE_NORMAL))
@@ -297,19 +314,25 @@ class KeyboardLayout(private val theme: KeyboardTheme) {
         alphaKeys[idx++].bounds.set(x, y, x + specialW, y + rowHeight - mv * 2) // Del
         curRow++
 
-        // Row 3 (7 keys): ?123 (1.2x), Emoji (0.85x), Lang/Settings (0.85x), , (0.75x), Space (~4.25x), . (0.75x), Enter (1.35x)
+        // Row 3: ?123, [optional Emoji], Lang/Settings, ',', Space (expanded when Emoji hidden), '.', Enter
         y = topOffset + curRow * rowHeight + mv
         val sideKeyW = kw10 * 1.2f
         val smallKeyW = kw10 * 0.85f
         val punctW = kw10 * 0.75f
         val enterW = kw10 * 1.35f
-        val spaceW = (width - (sideKeyW + smallKeyW * 2f + punctW * 2f + enterW + mh * 14f)).coerceAtLeast(kw10 * 2f)
+        val row3KeyCount = if (showEmojiKey) 7 else 6
+        val emojiSlotW = if (showEmojiKey) smallKeyW else 0f
+        val spaceW = (
+            width - (sideKeyW + emojiSlotW + smallKeyW + punctW * 2f + enterW + mh * (row3KeyCount * 2f))
+        ).coerceAtLeast(kw10 * 2f)
 
         x = mh
         alphaKeys[idx++].bounds.set(x, y, x + sideKeyW, y + rowHeight - mv * 2) // ?123
         x += sideKeyW + mh * 2
-        alphaKeys[idx++].bounds.set(x, y, x + smallKeyW, y + rowHeight - mv * 2) // Emoji
-        x += smallKeyW + mh * 2
+        if (showEmojiKey) {
+            alphaKeys[idx++].bounds.set(x, y, x + smallKeyW, y + rowHeight - mv * 2) // Emoji
+            x += smallKeyW + mh * 2
+        }
         alphaKeys[idx++].bounds.set(x, y, x + smallKeyW, y + rowHeight - mv * 2) // Lang/Settings
         x += smallKeyW + mh * 2
         alphaKeys[idx++].bounds.set(x, y, x + punctW, y + rowHeight - mv * 2) // ,
@@ -354,20 +377,27 @@ class KeyboardLayout(private val theme: KeyboardTheme) {
         val enterW = kw10 * 1.35f
         val commaW = kw10 * 0.85f
         val dotW = kw10 * 0.85f
-        val spaceW = width - (sideKeyW + smallKeyW + commaW + dotW + enterW + mh * 12)
+        val row3KeyCount = if (showEmojiKey) 6 else 5
+        val emojiSlotW = if (showEmojiKey) smallKeyW else 0f
+        val spaceW = (
+            width - (sideKeyW + emojiSlotW + commaW + dotW + enterW + mh * (row3KeyCount * 2f))
+        ).coerceAtLeast(kw10 * 2f)
 
+        var idx = 29
         x = mh
-        symbolKeys[29].bounds.set(x, y, x + sideKeyW, y + rowHeight - mv * 2)
+        symbolKeys[idx++].bounds.set(x, y, x + sideKeyW, y + rowHeight - mv * 2)
         x += sideKeyW + mh * 2
-        symbolKeys[30].bounds.set(x, y, x + smallKeyW, y + rowHeight - mv * 2)
-        x += smallKeyW + mh * 2
-        symbolKeys[31].bounds.set(x, y, x + commaW, y + rowHeight - mv * 2)
+        if (showEmojiKey) {
+            symbolKeys[idx++].bounds.set(x, y, x + smallKeyW, y + rowHeight - mv * 2)
+            x += smallKeyW + mh * 2
+        }
+        symbolKeys[idx++].bounds.set(x, y, x + commaW, y + rowHeight - mv * 2)
         x += commaW + mh * 2
-        symbolKeys[32].bounds.set(x, y, x + spaceW, y + rowHeight - mv * 2)
+        symbolKeys[idx++].bounds.set(x, y, x + spaceW, y + rowHeight - mv * 2)
         x += spaceW + mh * 2
-        symbolKeys[33].bounds.set(x, y, x + dotW, y + rowHeight - mv * 2)
+        symbolKeys[idx++].bounds.set(x, y, x + dotW, y + rowHeight - mv * 2)
         x += dotW + mh * 2
-        symbolKeys[34].bounds.set(x, y, x + enterW, y + rowHeight - mv * 2)
+        symbolKeys[idx].bounds.set(x, y, x + enterW, y + rowHeight - mv * 2)
     }
 
     private fun measureSymbolShift(width: Int, topOffset: Float, rowHeight: Float, mh: Float, mv: Float) {
@@ -403,20 +433,27 @@ class KeyboardLayout(private val theme: KeyboardTheme) {
         val enterW = kw10 * 1.35f
         val angleLW = kw10 * 0.85f
         val angleRW = kw10 * 0.85f
-        val spaceW = width - (sideKeyW + smallKeyW + angleLW + angleRW + enterW + mh * 12)
+        val row3KeyCount = if (showEmojiKey) 6 else 5
+        val emojiSlotW = if (showEmojiKey) smallKeyW else 0f
+        val spaceW = (
+            width - (sideKeyW + emojiSlotW + angleLW + angleRW + enterW + mh * (row3KeyCount * 2f))
+        ).coerceAtLeast(kw10 * 2f)
 
+        var idx = 28
         x = mh
-        symbolShiftKeys[28].bounds.set(x, y, x + sideKeyW, y + rowHeight - mv * 2)
+        symbolShiftKeys[idx++].bounds.set(x, y, x + sideKeyW, y + rowHeight - mv * 2)
         x += sideKeyW + mh * 2
-        symbolShiftKeys[29].bounds.set(x, y, x + smallKeyW, y + rowHeight - mv * 2)
-        x += smallKeyW + mh * 2
-        symbolShiftKeys[30].bounds.set(x, y, x + angleLW, y + rowHeight - mv * 2)
+        if (showEmojiKey) {
+            symbolShiftKeys[idx++].bounds.set(x, y, x + smallKeyW, y + rowHeight - mv * 2)
+            x += smallKeyW + mh * 2
+        }
+        symbolShiftKeys[idx++].bounds.set(x, y, x + angleLW, y + rowHeight - mv * 2)
         x += angleLW + mh * 2
-        symbolShiftKeys[31].bounds.set(x, y, x + spaceW, y + rowHeight - mv * 2)
+        symbolShiftKeys[idx++].bounds.set(x, y, x + spaceW, y + rowHeight - mv * 2)
         x += spaceW + mh * 2
-        symbolShiftKeys[32].bounds.set(x, y, x + angleRW, y + rowHeight - mv * 2)
+        symbolShiftKeys[idx++].bounds.set(x, y, x + angleRW, y + rowHeight - mv * 2)
         x += angleRW + mh * 2
-        symbolShiftKeys[33].bounds.set(x, y, x + enterW, y + rowHeight - mv * 2)
+        symbolShiftKeys[idx].bounds.set(x, y, x + enterW, y + rowHeight - mv * 2)
     }
 
     private fun measureNumpad(width: Int, topOffset: Float, rowHeight: Float, mh: Float, mv: Float) {

@@ -1,13 +1,11 @@
 package com.truelight.ime.settings
 
-import android.app.Activity
-import android.app.ActivityManager
-import android.app.AlertDialog
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Intent
-import android.content.SharedPreferences
+import android.content.res.ColorStateList
 import android.content.res.Configuration
+import android.database.ContentObserver
 import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
@@ -16,7 +14,6 @@ import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
-import android.os.Process
 import android.provider.Settings
 import android.text.InputType
 import android.view.Gravity
@@ -24,41 +21,117 @@ import android.view.View
 import android.view.ViewGroup
 import android.view.WindowInsetsController
 import android.view.inputmethod.InputMethodManager
-import android.widget.Button
 import android.widget.EditText
+import android.widget.FrameLayout
+import android.widget.HorizontalScrollView
 import android.widget.LinearLayout
-import android.widget.ScrollView
-import android.widget.SeekBar
-import android.widget.Switch
 import android.widget.TextView
 import android.widget.Toast
+import androidx.appcompat.app.AppCompatActivity
+import androidx.core.widget.NestedScrollView
+import com.google.android.material.bottomnavigation.BottomNavigationView
+import com.google.android.material.button.MaterialButton
+import com.google.android.material.card.MaterialCardView
+import com.google.android.material.color.DynamicColors
+import com.google.android.material.color.MaterialColors
+import com.google.android.material.dialog.MaterialAlertDialogBuilder
+import com.google.android.material.materialswitch.MaterialSwitch
+import com.google.android.material.navigation.NavigationBarView
+import com.google.android.material.progressindicator.LinearProgressIndicator
+import com.google.android.material.slider.Slider
+import com.google.android.material.textfield.TextInputEditText
+import com.google.android.material.textfield.TextInputLayout
+import com.truelight.ime.R
 import com.truelight.ime.config.CssThemeParser
 import com.truelight.ime.config.KeyboardPrefs
-import com.truelight.ime.emoji.EmojiHistoryManager
+import com.truelight.ime.config.PrefsProvider
+import com.truelight.ime.config.RemotePrefsClient
 import com.truelight.ime.lang.LanguageRegistry
-import com.truelight.ime.suggest.SuggestionManager
 import java.io.BufferedReader
 import java.io.InputStreamReader
 import java.util.Locale
+import kotlin.math.roundToInt
 
 /**
- * 100% Pure Android Framework Settings & Telemetry Activity (Zero AndroidX, Zero Internet).
- * Distinctive True Light precision aesthetic: hairline card framing, monospace technical telemetry,
- * live PSS RAM monitor & comparison bars, inline CSS-like style sheet editor, and real-time sync.
+ * Material Design 3 Settings & Live IME Telemetry App running in isolated `android:process=":settings"`.
+ *
+ * Architecture guarantees:
+ *  - Material 3 / AndroidX loads ONLY in `:settings` (adds 0 MB to the pure-Canvas `TrueLightIME` process).
+ *  - All reads, writes, and live IME process RAM stats bridge atomically through [RemotePrefsClient]
+ *    and [PrefsProvider] in the main IME process.
+ *  - Zero INTERNET permission — 100% offline and private.
  */
-class SettingsActivity : Activity() {
+class SettingsActivity : AppCompatActivity() {
 
     companion object {
         private const val REQ_IMPORT_DICT = 1001
         private const val RAM_REFRESH_INTERVAL_MS = 2500L
-        private const val REF_AOSP_MB = 55f
-        private const val REF_GBOARD_MB = 167f
-        private const val RAM_SCALE_MAX_MB = 180f
+        private const val REF_AOSP_MB = 55
+        private const val REF_GBOARD_MB = 167
+        private const val RAM_SCALE_MAX_MB = 180
+
+        private const val CSS_PRESET_PAPER_LIGHT = """keyboard {
+  bg: #E9EDF2;
+  strip-bg: #F5F7FA;
+  key-bg: #FFFFFF;
+  key-special-bg: #D7DEE8;
+  key-pressed-bg: #C5D1E3;
+  key-border: #CBD3DE;
+  key-border-width: 1dp;
+  key-radius: 6dp;
+  key-gap-h: 3dp;
+  key-gap-v: 4dp;
+  key-shadow: 1.5dp;
+  text-color: #14171C;
+  subtext-color: #5C6573;
+  accent: #1A66E8;
+  text-on-accent: #FFFFFF;
+  font-size: 20sp;
+}"""
+
+        private const val CSS_PRESET_AMOLED_PURE = """keyboard {
+  bg: #000000;
+  strip-bg: #000000;
+  key-bg: #121316;
+  key-special-bg: #1B1D22;
+  key-pressed-bg: #2E323B;
+  key-border: #262A33;
+  key-border-width: 1dp;
+  key-radius: 6dp;
+  key-gap-h: 3dp;
+  key-gap-v: 4dp;
+  key-shadow: 0dp;
+  text-color: #F5F6F8;
+  subtext-color: #828794;
+  accent: #4F8CFF;
+  text-on-accent: #FFFFFF;
+  font-size: 20sp;
+}"""
+
+        private const val CSS_PRESET_NORD_SLATE = """keyboard {
+  bg: #2E3440;
+  strip-bg: #242933;
+  key-bg: #3B4252;
+  key-special-bg: #434C5E;
+  key-pressed-bg: #4C566A;
+  key-border: #4C566A;
+  key-border-width: 1dp;
+  key-radius: 6dp;
+  key-gap-h: 3dp;
+  key-gap-v: 4dp;
+  key-shadow: 1.5dp;
+  text-color: #ECEFF4;
+  subtext-color: #D8DEE9;
+  accent: #88C0D0;
+  text-on-accent: #2E3440;
+  font-size: 20sp;
+}"""
     }
 
-    private lateinit var prefs: KeyboardPrefs
+    private lateinit var remotePrefs: RemotePrefsClient
     private var pendingImportDictKey: String = "en"
     private var isSyncingUi = false
+    private var activeTabIndex = 0
 
     private val mainHandler = Handler(Looper.getMainLooper())
     private val ramRefreshRunnable = object : Runnable {
@@ -68,56 +141,72 @@ class SettingsActivity : Activity() {
         }
     }
 
-    private val prefListener = SharedPreferences.OnSharedPreferenceChangeListener { _, _ ->
-        mainHandler.post {
+    private val prefsObserver = object : ContentObserver(mainHandler) {
+        override fun onChange(selfChange: Boolean) {
+            remotePrefs.invalidateCache()
             syncUiFromPrefs()
             refreshRamMonitor()
         }
     }
 
-    // Live-updated UI references
-    private lateinit var heroRamBadge: TextView
-    private lateinit var ramLiveValueView: TextView
-    private lateinit var ramBreakdownView: TextView
-    private lateinit var ramTrueLightBar: View
-    private lateinit var ramDeltaSummaryView: TextView
+    // Tab views
+    private lateinit var tabPages: Array<View>
+    private lateinit var bottomNav: BottomNavigationView
 
-    private lateinit var statusEnabledPill: TextView
-    private lateinit var statusDefaultPill: TextView
+    // Home Tab live telemetry & setup views
+    private lateinit var ramHeadlineView: TextView
+    private lateinit var ramPidChip: TextView
+    private lateinit var ramPssMetricView: TextView
+    private lateinit var ramDalvikMetricView: TextView
+    private lateinit var ramNativeMetricView: TextView
+    private lateinit var ramLiveBarLabel: TextView
+    private lateinit var ramLiveIndicator: LinearProgressIndicator
+    private lateinit var ramFeatureSummaryView: TextView
+
+    private lateinit var statusEnabledChip: TextView
+    private lateinit var statusDefaultChip: TextView
+
+    // Typing Tab views
     private lateinit var languagesContainer: LinearLayout
     private lateinit var viToneRow: LinearLayout
     private lateinit var viToneValueView: TextView
+    private lateinit var switchSuggestions: MaterialSwitch
+    private lateinit var switchAutoCorrect: MaterialSwitch
+    private lateinit var enterLongPressSegments: Array<TextView>
+    private lateinit var switchShowEmojiKey: MaterialSwitch
+    private lateinit var switchAutoCaps: MaterialSwitch
+    private lateinit var switchDoubleSpace: MaterialSwitch
+    private lateinit var switchClipboard: MaterialSwitch
 
-    private lateinit var switchSuggestions: Switch
-    private lateinit var switchAutoCorrect: Switch
-    private lateinit var switchAutoCaps: Switch
-    private lateinit var switchDoubleSpace: Switch
-    private lateinit var switchClipboard: Switch
-    private lateinit var switchCustomCss: Switch
-    private lateinit var switchNumberRow: Switch
-    private lateinit var switchSubLabels: Switch
-    private lateinit var switchLongPress: Switch
-    private lateinit var switchHaptic: Switch
+    // Style Tab views
+    private lateinit var themePresetCards: Array<MaterialCardView>
+    private lateinit var themePresetTitles: Array<TextView>
+    private lateinit var themePresetSubtitles: Array<TextView>
+    private lateinit var switchCustomCss: MaterialSwitch
+    private lateinit var cssStatusChip: TextView
+    private lateinit var heightValueChip: TextView
+    private lateinit var heightSlider: Slider
+    private lateinit var switchNumberRow: MaterialSwitch
+    private lateinit var switchSubLabels: MaterialSwitch
+    private lateinit var switchLongPress: MaterialSwitch
+    private lateinit var switchHaptic: MaterialSwitch
 
-    private lateinit var themePills: Array<TextView>
-    private lateinit var cssStatusBadge: TextView
-    private lateinit var heightValueView: TextView
-    private lateinit var heightSeekBar: SeekBar
-
-    // Palette colors (resolved dynamically from Android system theme)
+    // Resolved Material 3 dynamic color tokens
     private var isNightMode = false
-    private var colBg = 0
-    private var colCard = 0
-    private var colBorder = 0
-    private var colText = 0
-    private var colSubtext = 0
-    private var colAccent = 0
-    private var colOnAccent = 0
-    private var colDivider = 0
-    private var colChipBg = 0
-    private var colBarTrack = 0
-    private var colBarRef = 0
-    private var colBarHeavy = 0
+    private var colSurface = 0
+    private var colSurfaceLow = 0
+    private var colSurfaceContainer = 0
+    private var colSurfaceHigh = 0
+    private var colOnSurface = 0
+    private var colOnSurfaceVariant = 0
+    private var colPrimary = 0
+    private var colOnPrimary = 0
+    private var colPrimaryContainer = 0
+    private var colOnPrimaryContainer = 0
+    private var colSecondaryContainer = 0
+    private var colOnSecondaryContainer = 0
+    private var colOutlineVariant = 0
+    private var colError = 0
     private var colOkBg = 0
     private var colOkText = 0
     private var colWarnBg = 0
@@ -125,39 +214,23 @@ class SettingsActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        prefs = KeyboardPrefs(this)
-        resolveSystemColors()
-        setContentView(buildContentView())
-        applySystemBarsAppearance()
-    }
+        DynamicColors.applyToActivityIfAvailable(this)
 
-    private fun applySystemBarsAppearance() {
-        window.statusBarColor = colBg
-        window.navigationBarColor = colBg
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            val statusMask = WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS
-            val navMask = WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS
-            val combined = statusMask or navMask
-            window.insetsController?.setSystemBarsAppearance(if (isNightMode) 0 else combined, combined)
-        } else {
-            @Suppress("DEPRECATION")
-            var flags = 0
-            if (!isNightMode && Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                @Suppress("DEPRECATION")
-                flags = flags or View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR
-            }
-            if (!isNightMode && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                @Suppress("DEPRECATION")
-                flags = flags or View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR
-            }
-            @Suppress("DEPRECATION")
-            window.decorView.systemUiVisibility = flags
-        }
+        remotePrefs = RemotePrefsClient(this)
+        resolveMaterialColors()
+        setContentView(buildRootLayout())
+        applySystemBarsAppearance()
+        selectTab(0)
     }
 
     override fun onResume() {
         super.onResume()
-        prefs.prefs.registerOnSharedPreferenceChangeListener(prefListener)
+        try {
+            contentResolver.registerContentObserver(PrefsProvider.CONTENT_URI, true, prefsObserver)
+        } catch (_: Exception) {
+            // Safe fallback if observer registration fails
+        }
+        remotePrefs.invalidateCache()
         refreshSetupStatus()
         syncUiFromPrefs()
         refreshRamMonitor()
@@ -167,7 +240,11 @@ class SettingsActivity : Activity() {
 
     override fun onPause() {
         super.onPause()
-        prefs.prefs.unregisterOnSharedPreferenceChangeListener(prefListener)
+        try {
+            contentResolver.unregisterContentObserver(prefsObserver)
+        } catch (_: Exception) {
+            // Ignore
+        }
         mainHandler.removeCallbacks(ramRefreshRunnable)
     }
 
@@ -188,92 +265,85 @@ class SettingsActivity : Activity() {
         return try {
             @Suppress("DEPRECATION")
             val info = packageManager.getPackageInfo(packageName, 0)
-            info.versionName ?: "1.0.0"
+            info.versionName ?: "1.2.0"
         } catch (_: Exception) {
-            "1.0.0"
+            "1.2.0"
         }
     }
 
-    private fun resolveSystemColors() {
+    private fun resolveMaterialColors() {
         isNightMode = (resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) ==
             Configuration.UI_MODE_NIGHT_YES
 
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            if (isNightMode) {
-                colBg = getColor(android.R.color.system_neutral1_900)
-                colCard = getColor(android.R.color.system_neutral1_800)
-                colBorder = getColor(android.R.color.system_neutral2_700)
-                colText = getColor(android.R.color.system_neutral1_50)
-                colSubtext = getColor(android.R.color.system_neutral2_300)
-                colAccent = getColor(android.R.color.system_accent1_200)
-                colOnAccent = getColor(android.R.color.system_accent1_900)
-                colDivider = getColor(android.R.color.system_neutral2_700)
-                colChipBg = getColor(android.R.color.system_neutral1_900)
-                colBarTrack = getColor(android.R.color.system_neutral1_900)
-                colBarRef = getColor(android.R.color.system_neutral2_500)
-                colBarHeavy = 0xFFE57373.toInt()
-                colOkBg = 0xFF1B3B2B.toInt()
-                colOkText = 0xFF81C784.toInt()
-                colWarnBg = 0xFF3E2D16.toInt()
-                colWarnText = 0xFFFFB74D.toInt()
-            } else {
-                colBg = getColor(android.R.color.system_neutral1_50)
-                colCard = getColor(android.R.color.system_neutral1_0)
-                colBorder = getColor(android.R.color.system_neutral2_200)
-                colText = getColor(android.R.color.system_neutral1_900)
-                colSubtext = getColor(android.R.color.system_neutral2_600)
-                colAccent = getColor(android.R.color.system_accent1_600)
-                colOnAccent = getColor(android.R.color.system_neutral1_0)
-                colDivider = getColor(android.R.color.system_neutral2_200)
-                colChipBg = getColor(android.R.color.system_neutral1_100)
-                colBarTrack = getColor(android.R.color.system_neutral1_100)
-                colBarRef = getColor(android.R.color.system_neutral2_400)
-                colBarHeavy = 0xFFD32F2F.toInt()
-                colOkBg = 0xFFE6F4EA.toInt()
-                colOkText = 0xFF137333.toInt()
-                colWarnBg = 0xFFFEF3E1.toInt()
-                colWarnText = 0xFFB06000.toInt()
-            }
-        } else if (isNightMode) {
-            colBg = 0xFF0E1013.toInt()
-            colCard = 0xFF171A1F.toInt()
-            colBorder = 0xFF282D36.toInt()
-            colText = 0xFFF3F5F8.toInt()
-            colSubtext = 0xFF98A0AD.toInt()
-            colAccent = 0xFF5B93FF.toInt()
-            colOnAccent = 0xFF0A1426.toInt()
-            colDivider = 0xFF242830.toInt()
-            colChipBg = 0xFF1F232B.toInt()
-            colBarTrack = 0xFF111317.toInt()
-            colBarRef = 0xFF6B7280.toInt()
-            colBarHeavy = 0xFFE57373.toInt()
-            colOkBg = 0xFF1B3B2B.toInt()
+        val fallbackSurface = if (isNightMode) 0xFF111318.toInt() else 0xFFF8F9FC.toInt()
+        val fallbackLow = if (isNightMode) 0xFF191C22.toInt() else 0xFFFFFFFF.toInt()
+        val fallbackContainer = if (isNightMode) 0xFF1F2229.toInt() else 0xFFF0F3F8.toInt()
+        val fallbackHigh = if (isNightMode) 0xFF2A2E37.toInt() else 0xFFE5EAF2.toInt()
+        val fallbackOnSurface = if (isNightMode) 0xFFE4E7EE.toInt() else 0xFF191C20.toInt()
+        val fallbackOnVariant = if (isNightMode) 0xFFC2C7D0.toInt() else 0xFF44474F.toInt()
+        val fallbackPrimary = if (isNightMode) 0xFFA8C7FA.toInt() else 0xFF1A66E8.toInt()
+        val fallbackOnPrimary = if (isNightMode) 0xFF062E6F.toInt() else 0xFFFFFFFF.toInt()
+        val fallbackPrimaryCont = if (isNightMode) 0xFF0842A0.toInt() else 0xFFD8E6FF.toInt()
+        val fallbackOnPrimaryCont = if (isNightMode) 0xFFD3E3FD.toInt() else 0xFF041E49.toInt()
+        val fallbackSecCont = if (isNightMode) 0xFF334055.toInt() else 0xFFE0E8F6.toInt()
+        val fallbackOnSecCont = if (isNightMode) 0xFFD8E4F8.toInt() else 0xFF15253B.toInt()
+        val fallbackOutline = if (isNightMode) 0xFF3A3F4A.toInt() else 0xFFD3D8E0.toInt()
+        val fallbackError = if (isNightMode) 0xFFF2B8B5.toInt() else 0xFFB3261E.toInt()
+
+        colSurface = MaterialColors.getColor(this, com.google.android.material.R.attr.colorSurface, fallbackSurface)
+        colSurfaceLow = MaterialColors.getColor(this, com.google.android.material.R.attr.colorSurfaceContainerLow, fallbackLow)
+        colSurfaceContainer = MaterialColors.getColor(this, com.google.android.material.R.attr.colorSurfaceContainer, fallbackContainer)
+        colSurfaceHigh = MaterialColors.getColor(this, com.google.android.material.R.attr.colorSurfaceContainerHigh, fallbackHigh)
+        colOnSurface = MaterialColors.getColor(this, com.google.android.material.R.attr.colorOnSurface, fallbackOnSurface)
+        colOnSurfaceVariant = MaterialColors.getColor(this, com.google.android.material.R.attr.colorOnSurfaceVariant, fallbackOnVariant)
+        colPrimary = MaterialColors.getColor(this, com.google.android.material.R.attr.colorPrimary, fallbackPrimary)
+        colOnPrimary = MaterialColors.getColor(this, com.google.android.material.R.attr.colorOnPrimary, fallbackOnPrimary)
+        colPrimaryContainer = MaterialColors.getColor(this, com.google.android.material.R.attr.colorPrimaryContainer, fallbackPrimaryCont)
+        colOnPrimaryContainer = MaterialColors.getColor(this, com.google.android.material.R.attr.colorOnPrimaryContainer, fallbackOnPrimaryCont)
+        colSecondaryContainer = MaterialColors.getColor(this, com.google.android.material.R.attr.colorSecondaryContainer, fallbackSecCont)
+        colOnSecondaryContainer = MaterialColors.getColor(this, com.google.android.material.R.attr.colorOnSecondaryContainer, fallbackOnSecCont)
+        colOutlineVariant = MaterialColors.getColor(this, com.google.android.material.R.attr.colorOutlineVariant, fallbackOutline)
+        colError = MaterialColors.getColor(this, com.google.android.material.R.attr.colorError, fallbackError)
+
+        if (isNightMode) {
+            colOkBg = 0xFF1A3A2A.toInt()
             colOkText = 0xFF81C784.toInt()
-            colWarnBg = 0xFF3E2D16.toInt()
+            colWarnBg = 0xFF3E2C14.toInt()
             colWarnText = 0xFFFFB74D.toInt()
         } else {
-            colBg = 0xFFF4F6F9.toInt()
-            colCard = 0xFFFFFFFF.toInt()
-            colBorder = 0xFFDCE2EA.toInt()
-            colText = 0xFF121519.toInt()
-            colSubtext = 0xFF5A6370.toInt()
-            colAccent = 0xFF1A66E8.toInt()
-            colOnAccent = 0xFFFFFFFF.toInt()
-            colDivider = 0xFFE6EAF0.toInt()
-            colChipBg = 0xFFF0F3F8.toInt()
-            colBarTrack = 0xFFE9EEF5.toInt()
-            colBarRef = 0xFF8A94A6.toInt()
-            colBarHeavy = 0xFFD32F2F.toInt()
-            colOkBg = 0xFFE6F4EA.toInt()
+            colOkBg = 0xFFE3F5E9.toInt()
             colOkText = 0xFF137333.toInt()
-            colWarnBg = 0xFFFEF3E1.toInt()
+            colWarnBg = 0xFFFEF2DF.toInt()
             colWarnText = 0xFFB06000.toInt()
         }
     }
 
-    private fun roundedBg(color: Int, radiusDp: Int, strokeColor: Int = Color.TRANSPARENT): GradientDrawable {
+    private fun applySystemBarsAppearance() {
+        window.statusBarColor = colSurface
+        window.navigationBarColor = colSurfaceContainer
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            val mask = WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS or
+                WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS
+            window.insetsController?.setSystemBarsAppearance(if (isNightMode) 0 else mask, mask)
+        } else {
+            @Suppress("DEPRECATION")
+            var flags = 0
+            if (!isNightMode && Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                @Suppress("DEPRECATION")
+                flags = flags or View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR
+            }
+            if (!isNightMode && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                @Suppress("DEPRECATION")
+                flags = flags or View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR
+            }
+            @Suppress("DEPRECATION")
+            window.decorView.systemUiVisibility = flags
+        }
+    }
+
+    private fun pillBg(bgColor: Int, radiusDp: Int = 100, strokeColor: Int = Color.TRANSPARENT): GradientDrawable {
         return GradientDrawable().apply {
-            setColor(color)
+            setColor(bgColor)
             cornerRadius = dp(radiusDp).toFloat()
             if (strokeColor != Color.TRANSPARENT) {
                 setStroke(dp(1), strokeColor)
@@ -281,99 +351,140 @@ class SettingsActivity : Activity() {
         }
     }
 
-    private fun buildContentView(): View {
-        val scroll = ScrollView(this).apply {
-            setBackgroundColor(colBg)
-            isFillViewport = true
-            isVerticalScrollBarEnabled = false
-        }
+    // --- ROOT SHELL: M3 TOP BAR + 4 TAB PAGES + M3 BOTTOM NAVIGATION ---
 
+    private fun buildRootLayout(): View {
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            val pad = dp(16)
-            setPadding(pad, dp(24), pad, dp(36))
+            setBackgroundColor(colSurface)
+            layoutParams = ViewGroup.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT
+            )
         }
 
-        // Distinctive True Light Precision Hero Header
-        root.addView(buildHeroHeader())
+        root.addView(buildTopHeader())
 
-        // Card 1: Live RAM Footprint & Comparison Monitor
-        root.addView(buildRamMonitorCard())
+        // Hairline separator below header
+        root.addView(View(this).apply {
+            setBackgroundColor(colOutlineVariant)
+            alpha = 0.45f
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(1))
+        })
 
-        // Card 2: Setup & Live Sandbox
-        root.addView(buildSetupCard())
+        val contentFrame = FrameLayout(this).apply {
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f)
+        }
 
-        // Card 3: Languages (Group 1)
-        root.addView(buildLanguagesCard())
+        val homePage = wrapInScroll(buildHomeTab())
+        val typingPage = wrapInScroll(buildTypingTab())
+        val stylePage = wrapInScroll(buildStyleTab())
+        val aboutPage = wrapInScroll(buildAboutTab())
+        tabPages = arrayOf(homePage, typingPage, stylePage, aboutPage)
+        for (page in tabPages) {
+            contentFrame.addView(page)
+        }
+        root.addView(contentFrame)
 
-        // Card 4: Typing & Intelligence
-        root.addView(buildTypingAndSuggestionsCard())
+        bottomNav = BottomNavigationView(this).apply {
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            )
+            inflateMenu(R.menu.settings_bottom_nav)
+            labelVisibilityMode = NavigationBarView.LABEL_VISIBILITY_LABELED
+            setOnItemSelectedListener { item ->
+                when (item.itemId) {
+                    R.id.nav_home -> selectTab(0)
+                    R.id.nav_typing -> selectTab(1)
+                    R.id.nav_style -> selectTab(2)
+                    R.id.nav_about -> selectTab(3)
+                    else -> false
+                }
+            }
+        }
+        root.addView(bottomNav)
 
-        // Card 5: Appearance & Custom CSS Style Sheet
-        root.addView(buildAppearanceAndCssCard())
-
-        // Card 6: Updates & Privacy (Zero Internet)
-        root.addView(buildUpdatesAndPrivacyCard())
-
-        scroll.addView(root)
-        return scroll
+        return root
     }
 
-    private fun buildHeroHeader(): View {
-        val header = LinearLayout(this).apply {
+    private fun selectTab(index: Int): Boolean {
+        activeTabIndex = index.coerceIn(0, tabPages.lastIndex)
+        for (i in tabPages.indices) {
+            tabPages[i].visibility = if (i == activeTabIndex) View.VISIBLE else View.GONE
+        }
+        if (activeTabIndex == 0) {
+            refreshSetupStatus()
+            refreshRamMonitor()
+        }
+        return true
+    }
+
+    private fun buildTopHeader(): View {
+        val bar = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setBackgroundColor(colSurface)
+            setPadding(dp(20), dp(14), dp(16), dp(14))
+        }
+
+        val titleCol = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(2), dp(8), dp(2), dp(18))
-        }
-
-        val titleRow = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-        }
-
-        // Precision accent bar mark
-        titleRow.addView(View(this).apply {
-            background = roundedBg(colAccent, 3)
-            layoutParams = LinearLayout.LayoutParams(dp(4), dp(26)).apply {
-                marginEnd = dp(10)
-            }
-        })
-
-        titleRow.addView(TextView(this).apply {
-            text = "True Light"
-            textSize = 27f
-            typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
-            letterSpacing = -0.02f
-            setTextColor(colText)
             layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
-        })
-
-        // Version monospace badge
-        titleRow.addView(createMonoPill("v${getAppVersionName()}", colChipBg, colSubtext, colBorder))
-        header.addView(titleRow)
-
-        val badgeRow = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            setPadding(0, dp(10), 0, 0)
         }
+        titleCol.addView(TextView(this).apply {
+            text = "True Light"
+            textSize = 22f
+            typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
+            letterSpacing = -0.015f
+            setTextColor(colOnSurface)
+        })
+        titleCol.addView(TextView(this).apply {
+            text = "Pure Canvas IME"
+            textSize = 12f
+            setTextColor(colOnSurfaceVariant)
+        })
+        bar.addView(titleCol)
 
-        badgeRow.addView(createMonoPill("0 INTERNET • OFFLINE", colOkBg, colOkText).apply {
+        bar.addView(createChip("v${getAppVersionName()}", colSurfaceContainer, colOnSurfaceVariant, colOutlineVariant).apply {
             layoutParams = LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT
             ).apply {
-                marginEnd = dp(8)
+                marginEnd = dp(6)
             }
         })
+        bar.addView(createChip("IME Offline", colOkBg, colOkText))
 
-        heroRamBadge = createMonoPill("LIVE RAM: -- MB", colChipBg, colAccent, colBorder)
-        badgeRow.addView(heroRamBadge)
-        header.addView(badgeRow)
-
-        return header
+        return bar
     }
 
-    private fun createMonoPill(
+    private fun wrapInScroll(content: View): NestedScrollView {
+        return NestedScrollView(this).apply {
+            layoutParams = FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT
+            )
+            isFillViewport = true
+            isVerticalScrollBarEnabled = false
+            addView(content)
+        }
+    }
+
+    private fun createTabColumn(): LinearLayout {
+        return LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(16), dp(16), dp(16), dp(28))
+            layoutParams = ViewGroup.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            )
+        }
+    }
+
+    // --- MATERIAL 3 UI HELPERS ---
+
+    private fun createChip(
         label: String,
         bgColor: Int,
         textColor: Int,
@@ -381,21 +492,21 @@ class SettingsActivity : Activity() {
     ): TextView {
         return TextView(this).apply {
             text = label
-            textSize = 11f
-            typeface = Typeface.MONOSPACE
-            letterSpacing = 0.04f
+            textSize = 11.5f
+            typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
             setTextColor(textColor)
-            background = roundedBg(bgColor, 8, strokeColor)
-            setPadding(dp(9), dp(4), dp(9), dp(4))
+            background = pillBg(bgColor, 100, strokeColor)
+            setPadding(dp(10), dp(4), dp(10), dp(4))
         }
     }
 
-    private fun createCard(eyebrow: String, title: String): LinearLayout {
-        val card = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            background = roundedBg(colCard, 14, colBorder)
-            val p = dp(16)
-            setPadding(p, dp(14), p, p)
+    private fun createCard(title: String, subtitle: String? = null): Pair<MaterialCardView, LinearLayout> {
+        val card = MaterialCardView(this).apply {
+            radius = dp(20).toFloat()
+            cardElevation = 0f
+            strokeWidth = dp(1)
+            strokeColor = colOutlineVariant
+            setCardBackgroundColor(colSurfaceLow)
             layoutParams = LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT
@@ -403,45 +514,67 @@ class SettingsActivity : Activity() {
                 bottomMargin = dp(14)
             }
         }
-        card.addView(TextView(this).apply {
-            text = eyebrow
-            textSize = 10.5f
-            typeface = Typeface.MONOSPACE
-            letterSpacing = 0.12f
-            setTextColor(colAccent)
-        })
-        card.addView(TextView(this).apply {
+        val body = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(18), dp(16), dp(18), dp(18))
+        }
+        body.addView(TextView(this).apply {
             text = title
-            textSize = 16.5f
-            typeface = Typeface.DEFAULT_BOLD
-            setTextColor(colText)
-            setPadding(0, dp(2), 0, dp(10))
+            textSize = 17f
+            typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
+            setTextColor(colOnSurface)
         })
-        return card
+        if (subtitle != null) {
+            body.addView(TextView(this).apply {
+                text = subtitle
+                textSize = 12.5f
+                setTextColor(colOnSurfaceVariant)
+                setPadding(0, dp(3), 0, dp(12))
+            })
+        } else {
+            body.addView(View(this).apply {
+                layoutParams = LinearLayout.LayoutParams(1, dp(10))
+            })
+        }
+        card.addView(body)
+        return card to body
     }
 
-    private fun createButton(label: String, primary: Boolean, onClick: () -> Unit): Button {
-        return Button(this).apply {
+    private fun createFilledButton(label: String, onClick: () -> Unit): MaterialButton {
+        return MaterialButton(this).apply {
             text = label
             isAllCaps = false
-            textSize = 13.5f
-            typeface = Typeface.DEFAULT_BOLD
-            setTextColor(if (primary) colOnAccent else colText)
-            background = roundedBg(
-                if (primary) colAccent else colChipBg,
-                10,
-                if (primary) Color.TRANSPARENT else colBorder
-            )
-            minHeight = dp(42)
-            minimumHeight = dp(42)
-            setPadding(dp(12), dp(8), dp(12), dp(8))
+            cornerRadius = dp(14)
+            setOnClickListener { onClick() }
+        }
+    }
+
+    private fun createTonalButton(label: String, onClick: () -> Unit): MaterialButton {
+        return MaterialButton(this).apply {
+            text = label
+            isAllCaps = false
+            cornerRadius = dp(14)
+            backgroundTintList = ColorStateList.valueOf(colSecondaryContainer)
+            setTextColor(colOnSecondaryContainer)
+            elevation = 0f
+            stateListAnimator = null
+            setOnClickListener { onClick() }
+        }
+    }
+
+    private fun createOutlinedButton(label: String, onClick: () -> Unit): MaterialButton {
+        return MaterialButton(this, null, com.google.android.material.R.attr.materialButtonOutlinedStyle).apply {
+            text = label
+            isAllCaps = false
+            cornerRadius = dp(14)
             setOnClickListener { onClick() }
         }
     }
 
     private fun createDivider(): View {
         return View(this).apply {
-            setBackgroundColor(colDivider)
+            setBackgroundColor(colOutlineVariant)
+            alpha = 0.55f
             layoutParams = LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 dp(1)
@@ -452,634 +585,12 @@ class SettingsActivity : Activity() {
         }
     }
 
-    // --- CARD 1: LIVE RAM FOOTPRINT & COMPARISON MONITOR ---
-
-    private fun buildRamMonitorCard(): View {
-        val card = createCard("01 / TELEMETRY", "Live RAM Footprint")
-
-        // Live headline row
-        val headlineRow = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.BOTTOM
-            setPadding(0, 0, 0, dp(12))
-        }
-        ramLiveValueView = TextView(this).apply {
-            text = "--.- MB"
-            textSize = 26f
-            typeface = Typeface.MONOSPACE
-            setTextColor(colAccent)
-        }
-        headlineRow.addView(ramLiveValueView)
-
-        ramBreakdownView = TextView(this).apply {
-            text = "  PSS • measuring..."
-            textSize = 11.5f
-            typeface = Typeface.MONOSPACE
-            setTextColor(colSubtext)
-            setPadding(dp(8), 0, 0, dp(4))
-        }
-        headlineRow.addView(ramBreakdownView)
-        card.addView(headlineRow)
-
-        // Bar 1: True Light (Live)
-        val tlBarPair = buildComparisonBarRow("True Light (Live PSS)", "-- MB", colAccent, 0.22f)
-        ramTrueLightBar = tlBarPair.second
-        card.addView(tlBarPair.first)
-
-        // Bar 2: AOSP Native (Ref)
-        card.addView(
-            buildComparisonBarRow(
-                "AOSP Native (Ref)",
-                "~55 MB",
-                colBarRef,
-                (REF_AOSP_MB / RAM_SCALE_MAX_MB).coerceIn(0.05f, 1f)
-            ).first
-        )
-
-        // Bar 3: Gboard (Ref)
-        card.addView(
-            buildComparisonBarRow(
-                "Gboard (Ref)",
-                "~167 MB",
-                colBarHeavy,
-                (REF_GBOARD_MB / RAM_SCALE_MAX_MB).coerceIn(0.05f, 1f)
-            ).first
-        )
-
-        // Live toggle delta readout
-        ramDeltaSummaryView = TextView(this).apply {
-            textSize = 11.5f
-            typeface = Typeface.MONOSPACE
-            setTextColor(colText)
-            background = roundedBg(colChipBg, 10, colBorder)
-            setPadding(dp(10), dp(8), dp(10), dp(8))
-            setLineSpacing(dp(3).toFloat(), 1f)
-            layoutParams = LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT
-            ).apply {
-                topMargin = dp(8)
-            }
-        }
-        card.addView(ramDeltaSummaryView)
-
-        // Transparent footnote
-        card.addView(TextView(this).apply {
-            text = "True Light RAM is measured live (PSS). Android restricts apps from reading other apps' live RAM, so AOSP/Gboard bars use reference benchmarks."
-            textSize = 11f
-            setTextColor(colSubtext)
-            setPadding(0, dp(8), 0, 0)
-        })
-
-        return card
-    }
-
-    private fun buildComparisonBarRow(
-        label: String,
-        valueText: String,
-        barColor: Int,
-        initialFraction: Float
-    ): Pair<LinearLayout, View> {
-        val wrapper = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            layoutParams = LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT
-            ).apply {
-                bottomMargin = dp(9)
-            }
-        }
-
-        val labelRow = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            setPadding(0, 0, 0, dp(4))
-        }
-        labelRow.addView(TextView(this).apply {
-            text = label
-            textSize = 12.5f
-            setTextColor(colText)
-            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
-        })
-        val valueView = TextView(this).apply {
-            tag = "bar_value"
-            text = valueText
-            textSize = 12f
-            typeface = Typeface.MONOSPACE
-            setTextColor(colSubtext)
-        }
-        labelRow.addView(valueView)
-        wrapper.addView(labelRow)
-
-        val track = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            background = roundedBg(colBarTrack, 6, colBorder)
-            weightSum = 1f
-            layoutParams = LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                dp(10)
-            )
-        }
-        val fill = View(this).apply {
-            tag = valueView
-            background = roundedBg(barColor, 6)
-            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, initialFraction)
-        }
-        track.addView(fill)
-        wrapper.addView(track)
-
-        return wrapper to fill
-    }
-
-    private fun refreshRamMonitor() {
-        try {
-            val am = getSystemService(ACTIVITY_SERVICE) as ActivityManager
-            val infos = am.getProcessMemoryInfo(intArrayOf(Process.myPid()))
-            if (infos.isNotEmpty()) {
-                val info = infos[0]
-                val totalMb = info.totalPss / 1024f
-                val dalvikMb = info.dalvikPss / 1024f
-                val nativeMb = info.nativePss / 1024f
-
-                val totalStr = String.format(Locale.US, "%.1f MB", totalMb)
-                heroRamBadge.text = "LIVE RAM: $totalStr"
-                ramLiveValueView.text = totalStr
-                ramBreakdownView.text = String.format(
-                    Locale.US,
-                    "PSS • Dalvik %.1f • Native %.1f MB",
-                    dalvikMb,
-                    nativeMb
-                )
-
-                val barVal = ramTrueLightBar.tag as? TextView
-                barVal?.text = totalStr
-                val frac = (totalMb / RAM_SCALE_MAX_MB).coerceIn(0.06f, 1f)
-                val lp = ramTrueLightBar.layoutParams as LinearLayout.LayoutParams
-                lp.weight = frac
-                ramTrueLightBar.layoutParams = lp
-            }
-        } catch (_: Exception) {
-            // Safe fallback if system restricts telemetry
-        }
-
-        val sugStatus = if (prefs.suggestionsEnabled) "ON (+1.5 MB)" else "OFF (0 MB)"
-        val clipStatus = if (prefs.clipboardEnabled) "ON (+0.1 MB)" else "OFF (0 MB)"
-        val langCount = prefs.enabledLanguages.size
-        ramDeltaSummaryView.text =
-            "Suggestions: $sugStatus  •  Clipboard: $clipStatus\n" +
-            "Languages: $langCount active  •  Emoji: Lazy (0 MB until opened)"
-    }
-
-    // --- CARD 2: SETUP & LIVE SANDBOX ---
-
-    private fun buildSetupCard(): View {
-        val card = createCard("02 / ACTIVATION", "Setup & Live Sandbox")
-
-        val statusRow = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            layoutParams = LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT
-            ).apply {
-                bottomMargin = dp(12)
-            }
-        }
-        statusEnabledPill = createMonoPill("1. CHECKING...", colChipBg, colSubtext).apply {
-            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
-                marginEnd = dp(8)
-            }
-            gravity = Gravity.CENTER
-        }
-        statusDefaultPill = createMonoPill("2. CHECKING...", colChipBg, colSubtext).apply {
-            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
-            gravity = Gravity.CENTER
-        }
-        statusRow.addView(statusEnabledPill)
-        statusRow.addView(statusDefaultPill)
-        card.addView(statusRow)
-
-        val btnRow = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            layoutParams = LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT
-            )
-        }
-        val btnEnable = createButton("1. Enable Keyboard", primary = true) {
-            startActivity(Intent(Settings.ACTION_INPUT_METHOD_SETTINGS))
-        }.apply {
-            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
-                marginEnd = dp(8)
-            }
-        }
-        val btnSelect = createButton("2. Select Default", primary = false) {
-            val imm = getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager
-            imm.showInputMethodPicker()
-        }.apply {
-            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
-        }
-        btnRow.addView(btnEnable)
-        btnRow.addView(btnSelect)
-        card.addView(btnRow)
-
-        val testInput = EditText(this).apply {
-            hint = "Sandbox: tap to test typing, multi-touch, space glide..."
-            setHintTextColor(colSubtext)
-            setTextColor(colText)
-            textSize = 14.5f
-            background = roundedBg(colChipBg, 10, colBorder)
-            setPadding(dp(12), dp(12), dp(12), dp(12))
-            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE
-            minLines = 2
-            layoutParams = LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT
-            ).apply {
-                topMargin = dp(12)
-            }
-        }
-        card.addView(testInput)
-
-        return card
-    }
-
-    // --- CARD 3: LANGUAGES (GROUP 1) ---
-
-    private fun buildLanguagesCard(): View {
-        val card = createCard("03 / LANGUAGES", "Group 1 Offline Layouts")
-
-        card.addView(TextView(this).apply {
-            text = "Defaults to English (US). Add Vietnamese (Telex) or other Group 1 languages offline. Tap a language to activate."
-            textSize = 12.5f
-            setTextColor(colSubtext)
-            setPadding(0, 0, 0, dp(10))
-        })
-
-        languagesContainer = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-        }
-        card.addView(languagesContainer)
-
-        val actionRow = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            layoutParams = LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT
-            ).apply {
-                topMargin = dp(8)
-            }
-        }
-        val btnAdd = createButton("+ Add Language", primary = true) {
-            showAddLanguageDialog()
-        }.apply {
-            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
-                marginEnd = dp(8)
-            }
-        }
-        val btnImportDict = createButton("Import Dict (.txt)", primary = false) {
-            showImportDictionaryLanguagePicker()
-        }.apply {
-            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
-        }
-        actionRow.addView(btnAdd)
-        actionRow.addView(btnImportDict)
-        card.addView(actionRow)
-
-        // Vietnamese tone placement row (visible only when Vietnamese is added)
-        viToneRow = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            background = roundedBg(colChipBg, 10, colBorder)
-            setPadding(dp(12), dp(10), dp(12), dp(10))
-            layoutParams = LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT
-            ).apply {
-                topMargin = dp(10)
-            }
-            setOnClickListener { showVietnameseToneDialog() }
-        }
-        val viLabelCol = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
-        }
-        viLabelCol.addView(TextView(this).apply {
-            text = "Vietnamese tone style"
-            textSize = 14f
-            typeface = Typeface.DEFAULT_BOLD
-            setTextColor(colText)
-        })
-        viToneValueView = TextView(this).apply {
-            textSize = 12f
-            setTextColor(colSubtext)
-        }
-        viLabelCol.addView(viToneValueView)
-        viToneRow.addView(viLabelCol)
-        viToneRow.addView(createMonoPill("CHANGE", colCard, colAccent, colBorder))
-        card.addView(viToneRow)
-
-        return card
-    }
-
-    // --- CARD 4: TYPING & SUGGESTIONS ---
-
-    private fun buildTypingAndSuggestionsCard(): View {
-        val card = createCard("04 / TYPING & INTELLIGENCE", "Suggestions & Smart Input")
-
-        val sugRow = buildSwitchRow(
-            title = "Text suggestions (Gợi ý sửa)",
-            subtitle = "~1–2 MB RAM when ON / 0 MB when OFF (unloads dictionary).",
-            checked = prefs.suggestionsEnabled
-        ) { isChecked ->
-            prefs.suggestionsEnabled = isChecked
-            switchAutoCorrect.isEnabled = isChecked
-            if (!isChecked) {
-                switchAutoCorrect.isChecked = false
-            }
-            refreshRamMonitor()
-        }
-        switchSuggestions = sugRow.second
-        card.addView(sugRow.first)
-
-        card.addView(createDivider())
-
-        val acRow = buildSwitchRow(
-            title = "Auto-correct (Tự động sửa)",
-            subtitle = "Auto-replace typos on Space. Press Backspace immediately to undo.",
-            checked = prefs.autoCorrectEnabled
-        ) { isChecked ->
-            prefs.autoCorrectEnabled = isChecked
-            refreshRamMonitor()
-        }
-        switchAutoCorrect = acRow.second
-        switchAutoCorrect.isEnabled = prefs.suggestionsEnabled
-        card.addView(acRow.first)
-
-        card.addView(createDivider())
-
-        val capsRow = buildSwitchRow(
-            title = "Auto-capitalization",
-            subtitle = "Automatically capitalize the first word of each sentence.",
-            checked = prefs.autoCapsEnabled
-        ) { isChecked ->
-            prefs.autoCapsEnabled = isChecked
-        }
-        switchAutoCaps = capsRow.second
-        card.addView(capsRow.first)
-
-        card.addView(createDivider())
-
-        val dspRow = buildSwitchRow(
-            title = "Double-space period (. )",
-            subtitle = "Double-tap Space after a word to insert a period and space.",
-            checked = prefs.doubleSpacePeriodEnabled
-        ) { isChecked ->
-            prefs.doubleSpacePeriodEnabled = isChecked
-        }
-        switchDoubleSpace = dspRow.second
-        card.addView(dspRow.first)
-
-        card.addView(createDivider())
-
-        val clipRow = buildSwitchRow(
-            title = "Clipboard history (10 items, RAM-only)",
-            subtitle = "Quick-paste recent clips from strip icon. Never written to disk.",
-            checked = prefs.clipboardEnabled
-        ) { isChecked ->
-            prefs.clipboardEnabled = isChecked
-            refreshRamMonitor()
-        }
-        switchClipboard = clipRow.second
-        card.addView(clipRow.first)
-
-        card.addView(createDivider())
-
-        val btnClear = createButton("Clear learned words, clipboard & emoji history", primary = false) {
-            SuggestionManager(this).clearAllUserDictionaries()
-            EmojiHistoryManager(this).clearHistory()
-            prefs.bumpHistoryRevision()
-            refreshRamMonitor()
-            Toast.makeText(this, "Cleared learned words, clipboard & emoji history", Toast.LENGTH_SHORT).show()
-        }.apply {
-            layoutParams = LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT
-            )
-        }
-        card.addView(btnClear)
-
-        return card
-    }
-
-    // --- CARD 5: APPEARANCE & CUSTOM CSS STYLE SHEET ---
-
-    private fun buildAppearanceAndCssCard(): View {
-        val card = createCard("05 / APPEARANCE & CSS", "Theme & Custom Style Sheet")
-
-        // Inline 4-pill Theme Preset Selector
-        card.addView(TextView(this).apply {
-            text = "Theme preset"
-            textSize = 14f
-            typeface = Typeface.DEFAULT_BOLD
-            setTextColor(colText)
-            setPadding(0, 0, 0, dp(8))
-        })
-
-        val pillRow = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            background = roundedBg(colChipBg, 10, colBorder)
-            setPadding(dp(3), dp(3), dp(3), dp(3))
-            layoutParams = LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT
-            )
-        }
-        val labels = arrayOf("Dynamic", "Dark", "AMOLED", "Light")
-        themePills = Array(4) { idx ->
-            TextView(this).apply {
-                text = labels[idx]
-                textSize = 12.5f
-                gravity = Gravity.CENTER
-                setPadding(dp(4), dp(9), dp(4), dp(9))
-                layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
-                setOnClickListener {
-                    prefs.themeMode = idx
-                    updateThemePillsVisual(idx)
-                }
-            }.also { pillRow.addView(it) }
-        }
-        card.addView(pillRow)
-
-        card.addView(createDivider())
-
-        // Custom CSS-like Style Sheet toggle + Editor button
-        val cssRow = buildSwitchRow(
-            title = "Custom CSS-like Style Sheet",
-            subtitle = "Override key colors, borders, radius, gaps & font size (0 WebView, 0 MB).",
-            checked = prefs.customCssEnabled
-        ) { isChecked ->
-            prefs.customCssEnabled = isChecked
-            updateCssStatusBadge()
-        }
-        switchCustomCss = cssRow.second
-        card.addView(cssRow.first)
-
-        val cssBtnRow = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            layoutParams = LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT
-            ).apply {
-                topMargin = dp(8)
-            }
-        }
-        val btnEditCss = createButton("Edit CSS Style Sheet", primary = false) {
-            showCssEditorDialog()
-        }.apply {
-            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
-                marginEnd = dp(8)
-            }
-        }
-        cssStatusBadge = createMonoPill("DEFAULT", colChipBg, colSubtext, colBorder)
-        cssBtnRow.addView(btnEditCss)
-        cssBtnRow.addView(cssStatusBadge)
-        card.addView(cssBtnRow)
-
-        card.addView(createDivider())
-
-        // Keyboard height slider
-        val heightHeader = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-        }
-        heightHeader.addView(TextView(this).apply {
-            text = "Keyboard height"
-            textSize = 14.5f
-            setTextColor(colText)
-            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
-        })
-        heightValueView = createMonoPill("${prefs.keyboardHeightDp} dp", colChipBg, colAccent, colBorder)
-        heightHeader.addView(heightValueView)
-        card.addView(heightHeader)
-
-        heightSeekBar = SeekBar(this).apply {
-            max = KeyboardPrefs.MAX_HEIGHT_DP - KeyboardPrefs.MIN_HEIGHT_DP
-            progress = prefs.keyboardHeightDp - KeyboardPrefs.MIN_HEIGHT_DP
-            setPadding(0, dp(10), 0, dp(4))
-            setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
-                override fun onProgressChanged(sb: SeekBar?, progress: Int, fromUser: Boolean) {
-                    val h = KeyboardPrefs.MIN_HEIGHT_DP + progress
-                    heightValueView.text = "$h dp"
-                    if (fromUser && !isSyncingUi) {
-                        prefs.keyboardHeightDp = h
-                    }
-                }
-                override fun onStartTrackingTouch(sb: SeekBar?) {}
-                override fun onStopTrackingTouch(sb: SeekBar?) {}
-            })
-        }
-        card.addView(heightSeekBar)
-
-        card.addView(createDivider())
-
-        val numRow = buildSwitchRow(
-            title = "Dedicated number row",
-            subtitle = "Show a fixed 1–0 row above letter keys (stable height across symbols).",
-            checked = prefs.showNumberRow
-        ) { prefs.showNumberRow = it }
-        switchNumberRow = numRow.second
-        card.addView(numRow.first)
-
-        card.addView(createDivider())
-
-        val subRow = buildSwitchRow(
-            title = "Show key sub-labels",
-            subtitle = "Display secondary symbols on keycaps.",
-            checked = prefs.showSubLabels
-        ) { prefs.showSubLabels = it }
-        switchSubLabels = subRow.second
-        card.addView(subRow.first)
-
-        card.addView(createDivider())
-
-        val lpRow = buildSwitchRow(
-            title = "Long-press for symbols",
-            subtitle = "Hold a key to type its secondary symbol.",
-            checked = prefs.longPressSymbols
-        ) { prefs.longPressSymbols = it }
-        switchLongPress = lpRow.second
-        card.addView(lpRow.first)
-
-        card.addView(createDivider())
-
-        val hapRow = buildSwitchRow(
-            title = "Haptic vibration",
-            subtitle = "Crisp tactile feedback on keypress & gestures.",
-            checked = prefs.hapticEnabled
-        ) { prefs.hapticEnabled = it }
-        switchHaptic = hapRow.second
-        card.addView(hapRow.first)
-
-        return card
-    }
-
-    // --- CARD 6: UPDATES & PRIVACY (OPTION B — 0 INTERNET) ---
-
-    private fun buildUpdatesAndPrivacyCard(): View {
-        val card = createCard("06 / UPDATES & PRIVACY", "Zero-Network Guarantee")
-
-        val infoRow = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            setPadding(0, 0, 0, dp(10))
-        }
-        infoRow.addView(createMonoPill("VERSION v${getAppVersionName()}", colChipBg, colText, colBorder).apply {
-            layoutParams = LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT
-            ).apply {
-                marginEnd = dp(8)
-            }
-        })
-        infoRow.addView(createMonoPill("0 NETWORK PERMISSIONS VERIFIED", colOkBg, colOkText))
-        card.addView(infoRow)
-
-        card.addView(TextView(this).apply {
-            text = "True Light declares zero INTERNET or ACCESS_NETWORK_STATE permissions. Checking for releases opens GitHub safely in your external browser."
-            textSize = 12.5f
-            setTextColor(colSubtext)
-            setPadding(0, 0, 0, dp(12))
-        })
-
-        val btnReleases = createButton("Check GitHub Releases", primary = false) {
-            openGitHubReleases()
-        }.apply {
-            layoutParams = LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT
-            )
-        }
-        card.addView(btnReleases)
-
-        return card
-    }
-
-    private fun openGitHubReleases() {
-        try {
-            val intent = Intent(Intent.ACTION_VIEW, Uri.parse(KeyboardPrefs.GITHUB_RELEASES_URL))
-            startActivity(intent)
-        } catch (_: Exception) {
-            Toast.makeText(this, "No browser found to open GitHub Releases", Toast.LENGTH_SHORT).show()
-        }
-    }
-
-    private fun buildSwitchRow(
+    private fun createSwitchRow(
         title: String,
         subtitle: String,
         checked: Boolean,
         onToggle: (Boolean) -> Unit
-    ): Pair<LinearLayout, Switch> {
+    ): Pair<LinearLayout, MaterialSwitch> {
         val row = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
@@ -1093,16 +604,17 @@ class SettingsActivity : Activity() {
         }
         textCol.addView(TextView(this).apply {
             text = title
-            textSize = 14.5f
-            setTextColor(colText)
+            textSize = 15f
+            typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+            setTextColor(colOnSurface)
         })
         textCol.addView(TextView(this).apply {
             text = subtitle
-            textSize = 12f
-            setTextColor(colSubtext)
+            textSize = 12.5f
+            setTextColor(colOnSurfaceVariant)
             setPadding(0, dp(2), 0, 0)
         })
-        val sw = Switch(this).apply {
+        val sw = MaterialSwitch(this).apply {
             isChecked = checked
             setOnCheckedChangeListener { _, isChecked ->
                 if (!isSyncingUi) {
@@ -1118,69 +630,849 @@ class SettingsActivity : Activity() {
         return row to sw
     }
 
-    // --- SYNC & REFRESH ---
+    // =========================================================================
+    // TAB 1 — HOME (LIVE IME RAM TELEMETRY + SETUP & SANDBOX)
+    // =========================================================================
 
-    private fun syncUiFromPrefs() {
-        isSyncingUi = true
-        try {
-            refreshLanguagesList()
-            updateThemePillsVisual(prefs.themeMode)
-            updateCssStatusBadge()
-
-            heightValueView.text = "${prefs.keyboardHeightDp} dp"
-            val expectedProgress = prefs.keyboardHeightDp - KeyboardPrefs.MIN_HEIGHT_DP
-            if (heightSeekBar.progress != expectedProgress) {
-                heightSeekBar.progress = expectedProgress
-            }
-
-            viToneValueView.text = if (prefs.vietnameseModernTone) {
-                "New style (hoà, hoè, thuý)"
-            } else {
-                "Old style (hòa, hòe, thúy)"
-            }
-
-            switchSuggestions.isChecked = prefs.suggestionsEnabled
-            switchAutoCorrect.isEnabled = prefs.suggestionsEnabled
-            switchAutoCorrect.isChecked = prefs.autoCorrectEnabled
-            switchAutoCaps.isChecked = prefs.autoCapsEnabled
-            switchDoubleSpace.isChecked = prefs.doubleSpacePeriodEnabled
-            switchClipboard.isChecked = prefs.clipboardEnabled
-            switchCustomCss.isChecked = prefs.customCssEnabled
-            switchNumberRow.isChecked = prefs.showNumberRow
-            switchSubLabels.isChecked = prefs.showSubLabels
-            switchLongPress.isChecked = prefs.longPressSymbols
-            switchHaptic.isChecked = prefs.hapticEnabled
-        } finally {
-            isSyncingUi = false
-        }
+    private fun buildHomeTab(): View {
+        val col = createTabColumn()
+        col.addView(buildRamTelemetryCard())
+        col.addView(buildSetupAndSandboxCard())
+        return col
     }
 
-    private fun updateThemePillsVisual(selectedMode: Int) {
-        val activeIdx = selectedMode.coerceIn(0, themePills.lastIndex)
-        for (i in themePills.indices) {
-            val pill = themePills[i]
-            if (i == activeIdx) {
-                pill.background = roundedBg(colAccent, 8)
-                pill.setTextColor(colOnAccent)
-                pill.typeface = Typeface.DEFAULT_BOLD
-            } else {
-                pill.background = null
-                pill.setTextColor(colSubtext)
-                pill.typeface = Typeface.DEFAULT
+    private fun buildRamTelemetryCard(): View {
+        val (card, body) = createCard(
+            title = "Live IME RAM Telemetry",
+            subtitle = "Measured strictly inside the TrueLightIME keyboard process."
+        )
+
+        // Headline PSS + PID badge
+        val headlineRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(0, 0, 0, dp(12))
+        }
+        ramHeadlineView = TextView(this).apply {
+            text = "--.- MB"
+            textSize = 30f
+            typeface = Typeface.MONOSPACE
+            setTextColor(colPrimary)
+            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+        }
+        ramPidChip = createChip("IME PID: --", colSurfaceContainer, colOnSurfaceVariant, colOutlineVariant)
+        headlineRow.addView(ramHeadlineView)
+        headlineRow.addView(ramPidChip)
+        body.addView(headlineRow)
+
+        // 3 compact metric tiles: IME PSS | App Dalvik | Native/HWUI
+        val metricsRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply {
+                bottomMargin = dp(14)
             }
         }
+        val pssTile = createMetricTile("IME PSS", "-- MB")
+        ramPssMetricView = pssTile.second
+        val dalvikTile = createMetricTile("App Dalvik", "-- MB")
+        ramDalvikMetricView = dalvikTile.second
+        val nativeTile = createMetricTile("Native/HWUI", "-- MB")
+        ramNativeMetricView = nativeTile.second
+
+        metricsRow.addView(pssTile.first.apply {
+            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
+                marginEnd = dp(8)
+            }
+        })
+        metricsRow.addView(dalvikTile.first.apply {
+            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
+                marginEnd = dp(8)
+            }
+        })
+        metricsRow.addView(nativeTile.first.apply {
+            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+        })
+        body.addView(metricsRow)
+
+        // M3 LinearProgressIndicator comparison bars
+        val liveBar = buildProgressBarRow("True Light IME (Live)", "-- MB", colPrimary, 10)
+        ramLiveBarLabel = liveBar.second
+        ramLiveIndicator = liveBar.third
+        body.addView(liveBar.first)
+
+        body.addView(
+            buildProgressBarRow("AOSP Native (Ref)", "~55 MB", colOnSurfaceVariant, REF_AOSP_MB).first
+        )
+        body.addView(
+            buildProgressBarRow("Gboard (Ref)", "~167 MB", colError, REF_GBOARD_MB).first
+        )
+
+        // Feature RAM summary banner
+        ramFeatureSummaryView = TextView(this).apply {
+            textSize = 12f
+            typeface = Typeface.MONOSPACE
+            setTextColor(colOnSecondaryContainer)
+            background = pillBg(colSecondaryContainer, 14)
+            setPadding(dp(12), dp(10), dp(12), dp(10))
+            setLineSpacing(dp(3).toFloat(), 1f)
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply {
+                topMargin = dp(4)
+            }
+        }
+        body.addView(ramFeatureSummaryView)
+
+        // Process isolation callout
+        body.addView(TextView(this).apply {
+            text = "Settings runs in its own isolated :settings process, so Material Design 3 adds 0 MB to the keyboard IME process."
+            textSize = 12f
+            setTextColor(colOnSurfaceVariant)
+            setPadding(0, dp(10), 0, 0)
+        })
+
+        return card
     }
 
-    private fun updateCssStatusBadge() {
-        if (prefs.customCssEnabled) {
-            cssStatusBadge.text = "CSS ACTIVE"
-            cssStatusBadge.background = roundedBg(colOkBg, 8)
-            cssStatusBadge.setTextColor(colOkText)
-        } else {
-            cssStatusBadge.text = "CSS OFF"
-            cssStatusBadge.background = roundedBg(colChipBg, 8, colBorder)
-            cssStatusBadge.setTextColor(colSubtext)
+    private fun createMetricTile(label: String, initialValue: String): Pair<LinearLayout, TextView> {
+        val tile = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            background = pillBg(colSurfaceContainer, 14)
+            setPadding(dp(10), dp(10), dp(10), dp(10))
         }
+        val valueTv = TextView(this).apply {
+            text = initialValue
+            textSize = 14.5f
+            typeface = Typeface.MONOSPACE
+            setTextColor(colOnSurface)
+        }
+        tile.addView(valueTv)
+        tile.addView(TextView(this).apply {
+            text = label
+            textSize = 11f
+            setTextColor(colOnSurfaceVariant)
+            setPadding(0, dp(2), 0, 0)
+        })
+        return tile to valueTv
+    }
+
+    private fun buildProgressBarRow(
+        label: String,
+        valueText: String,
+        indicatorColor: Int,
+        initialProgress: Int
+    ): Triple<LinearLayout, TextView, LinearProgressIndicator> {
+        val wrapper = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply {
+                bottomMargin = dp(10)
+            }
+        }
+        val header = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(0, 0, 0, dp(5))
+        }
+        header.addView(TextView(this).apply {
+            text = label
+            textSize = 13f
+            setTextColor(colOnSurface)
+            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+        })
+        val valueTv = TextView(this).apply {
+            text = valueText
+            textSize = 12f
+            typeface = Typeface.MONOSPACE
+            setTextColor(colOnSurfaceVariant)
+        }
+        header.addView(valueTv)
+        wrapper.addView(header)
+
+        val indicator = LinearProgressIndicator(this).apply {
+            isIndeterminate = false
+            max = RAM_SCALE_MAX_MB
+            progress = initialProgress.coerceIn(0, RAM_SCALE_MAX_MB)
+            trackThickness = dp(8)
+            trackCornerRadius = dp(4)
+            setIndicatorColor(indicatorColor)
+            trackColor = colSurfaceHigh
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            )
+        }
+        wrapper.addView(indicator)
+        return Triple(wrapper, valueTv, indicator)
+    }
+
+    private fun buildSetupAndSandboxCard(): View {
+        val (card, body) = createCard(
+            title = "Setup & Live Typing Sandbox",
+            subtitle = "Enable True Light, pick it as default, and test gestures live."
+        )
+
+        val statusRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply {
+                bottomMargin = dp(12)
+            }
+        }
+        statusEnabledChip = createChip("1. Checking...", colSurfaceContainer, colOnSurfaceVariant).apply {
+            gravity = Gravity.CENTER
+            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
+                marginEnd = dp(8)
+            }
+        }
+        statusDefaultChip = createChip("2. Checking...", colSurfaceContainer, colOnSurfaceVariant).apply {
+            gravity = Gravity.CENTER
+            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+        }
+        statusRow.addView(statusEnabledChip)
+        statusRow.addView(statusDefaultChip)
+        body.addView(statusRow)
+
+        val btnRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply {
+                bottomMargin = dp(14)
+            }
+        }
+        val btnEnable = createFilledButton("Enable Keyboard") {
+            startActivity(Intent(Settings.ACTION_INPUT_METHOD_SETTINGS))
+        }.apply {
+            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
+                marginEnd = dp(8)
+            }
+        }
+        val btnDefault = createTonalButton("Select Default") {
+            val imm = getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager
+            imm.showInputMethodPicker()
+        }.apply {
+            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+        }
+        btnRow.addView(btnEnable)
+        btnRow.addView(btnDefault)
+        body.addView(btnRow)
+
+        // Material 3 OutlinedBox TextInputLayout + TextInputEditText
+        val inputLayout = TextInputLayout(this).apply {
+            boxBackgroundMode = TextInputLayout.BOX_BACKGROUND_OUTLINE
+            val corner = dp(14).toFloat()
+            setBoxCornerRadii(corner, corner, corner, corner)
+            hint = "Test typing, spacebar glide, long-press Enter → Emoji..."
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            )
+        }
+        val editText = TextInputEditText(this).apply {
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE
+            minLines = 2
+            maxLines = 4
+            gravity = Gravity.TOP or Gravity.START
+        }
+        inputLayout.addView(editText)
+        body.addView(inputLayout)
+
+        return card
+    }
+
+    // =========================================================================
+    // TAB 2 — TYPING (LANGUAGES, SUGGESTIONS, GESTURES & SHORTCUTS)
+    // =========================================================================
+
+    private fun buildTypingTab(): View {
+        val col = createTabColumn()
+        col.addView(buildLanguagesCard())
+        col.addView(buildSuggestionsCard())
+        col.addView(buildGesturesCard())
+        return col
+    }
+
+    private fun buildLanguagesCard(): View {
+        val (card, body) = createCard(
+            title = "Languages (Group 1 Offline)",
+            subtitle = "Defaults to English (US). Tap an added language to make it active."
+        )
+
+        languagesContainer = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+        }
+        body.addView(languagesContainer)
+
+        val btnRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply {
+                topMargin = dp(8)
+            }
+        }
+        val btnAdd = createFilledButton("+ Add Language") {
+            showAddLanguageDialog()
+        }.apply {
+            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
+                marginEnd = dp(8)
+            }
+        }
+        val btnImport = createOutlinedButton("Import Dict (.txt)") {
+            showImportDictionaryLanguagePicker()
+        }.apply {
+            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+        }
+        btnRow.addView(btnAdd)
+        btnRow.addView(btnImport)
+        body.addView(btnRow)
+
+        // Vietnamese tone placement selector (shown only when Vietnamese is added)
+        viToneRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            background = pillBg(colSurfaceContainer, 14)
+            setPadding(dp(14), dp(12), dp(12), dp(12))
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply {
+                topMargin = dp(12)
+            }
+            setOnClickListener { showVietnameseToneDialog() }
+        }
+        val viCol = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+        }
+        viCol.addView(TextView(this).apply {
+            text = "Vietnamese tone placement"
+            textSize = 14.5f
+            typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+            setTextColor(colOnSurface)
+        })
+        viToneValueView = TextView(this).apply {
+            textSize = 12.5f
+            setTextColor(colOnSurfaceVariant)
+        }
+        viCol.addView(viToneValueView)
+        viToneRow.addView(viCol)
+        viToneRow.addView(createChip("Change", colPrimaryContainer, colOnPrimaryContainer))
+        body.addView(viToneRow)
+
+        return card
+    }
+
+    private fun buildSuggestionsCard(): View {
+        val (card, body) = createCard(
+            title = "Text Suggestions",
+            subtitle = "Zero-allocation Trie engine. Turn OFF to unload dictionary (0 MB)."
+        )
+
+        val sugRow = createSwitchRow(
+            title = "Text suggestions (Gợi ý sửa)",
+            subtitle = "~1–2 MB RAM when ON • 0 MB when OFF.",
+            checked = remotePrefs.suggestionsEnabled
+        ) { isChecked ->
+            remotePrefs.suggestionsEnabled = isChecked
+            switchAutoCorrect.isEnabled = isChecked
+            if (!isChecked) {
+                isSyncingUi = true
+                switchAutoCorrect.isChecked = false
+                isSyncingUi = false
+            }
+            refreshRamMonitor()
+        }
+        switchSuggestions = sugRow.second
+        body.addView(sugRow.first)
+
+        body.addView(createDivider())
+
+        val acRow = createSwitchRow(
+            title = "Auto-correct (Tự động sửa)",
+            subtitle = "Replace typos on Space. Press Backspace immediately to undo.",
+            checked = remotePrefs.autoCorrectEnabled
+        ) { isChecked ->
+            remotePrefs.autoCorrectEnabled = isChecked
+            refreshRamMonitor()
+        }
+        switchAutoCorrect = acRow.second
+        switchAutoCorrect.isEnabled = remotePrefs.suggestionsEnabled
+        body.addView(acRow.first)
+
+        return card
+    }
+
+    private fun buildGesturesCard(): View {
+        val (card, body) = createCard(
+            title = "Gestures & Shortcuts",
+            subtitle = "Customize Enter long-press, bottom bar keys, and smart typing."
+        )
+
+        // Long-press Enter / Search segmented selector
+        body.addView(TextView(this).apply {
+            text = "Long-press Enter / Search"
+            textSize = 15f
+            typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+            setTextColor(colOnSurface)
+        })
+        body.addView(TextView(this).apply {
+            text = "Choose what holding the Enter/Search key triggers."
+            textSize = 12.5f
+            setTextColor(colOnSurfaceVariant)
+            setPadding(0, dp(2), 0, dp(8))
+        })
+
+        val segContainer = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            background = pillBg(colSurfaceContainer, 14, colOutlineVariant)
+            setPadding(dp(4), dp(4), dp(4), dp(4))
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            )
+        }
+        val segmentDefs = arrayOf(
+            "Open Emoji" to KeyboardPrefs.ENTER_LONG_PRESS_EMOJI,
+            "Newline (\\n)" to KeyboardPrefs.ENTER_LONG_PRESS_NEWLINE,
+            "Off" to KeyboardPrefs.ENTER_LONG_PRESS_NONE
+        )
+        enterLongPressSegments = Array(segmentDefs.size) { idx ->
+            val (label, actionVal) = segmentDefs[idx]
+            TextView(this).apply {
+                text = label
+                textSize = 13f
+                gravity = Gravity.CENTER
+                setPadding(dp(6), dp(9), dp(6), dp(9))
+                layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+                setOnClickListener {
+                    remotePrefs.longPressEnterAction = actionVal
+                    updateEnterLongPressSegments(actionVal)
+                }
+            }.also { segContainer.addView(it) }
+        }
+        body.addView(segContainer)
+
+        body.addView(createDivider())
+
+        val emojiKeyRow = createSwitchRow(
+            title = "Show Emoji key on bottom row",
+            subtitle = "Turn off for a wider Spacebar when using Long-press Enter → Emoji.",
+            checked = remotePrefs.showEmojiKey
+        ) { isChecked ->
+            remotePrefs.showEmojiKey = isChecked
+        }
+        switchShowEmojiKey = emojiKeyRow.second
+        body.addView(emojiKeyRow.first)
+
+        body.addView(createDivider())
+
+        val capsRow = createSwitchRow(
+            title = "Auto-capitalization",
+            subtitle = "Capitalize the first word of each new sentence.",
+            checked = remotePrefs.autoCapsEnabled
+        ) { remotePrefs.autoCapsEnabled = it }
+        switchAutoCaps = capsRow.second
+        body.addView(capsRow.first)
+
+        body.addView(createDivider())
+
+        val dspRow = createSwitchRow(
+            title = "Double-space period (. )",
+            subtitle = "Double-tap Space after a word to insert a period and space.",
+            checked = remotePrefs.doubleSpacePeriodEnabled
+        ) { remotePrefs.doubleSpacePeriodEnabled = it }
+        switchDoubleSpace = dspRow.second
+        body.addView(dspRow.first)
+
+        body.addView(createDivider())
+
+        val clipRow = createSwitchRow(
+            title = "Clipboard history (10 items, RAM-only)",
+            subtitle = "Quick-paste recent clips from strip icon. Never written to disk.",
+            checked = remotePrefs.clipboardEnabled
+        ) {
+            remotePrefs.clipboardEnabled = it
+            refreshRamMonitor()
+        }
+        switchClipboard = clipRow.second
+        body.addView(clipRow.first)
+
+        return card
+    }
+
+    // =========================================================================
+    // TAB 3 — STYLE (THEME PRESETS, CUSTOM CSS, LAYOUT & FEEL)
+    // =========================================================================
+
+    private fun buildStyleTab(): View {
+        val col = createTabColumn()
+        col.addView(buildThemePresetsCard())
+        col.addView(buildCustomCssCard())
+        col.addView(buildLayoutAndFeelCard())
+        return col
+    }
+
+    private fun buildThemePresetsCard(): View {
+        val (card, body) = createCard(
+            title = "Theme Preset",
+            subtitle = "Material You adapts to your Android 12+ wallpaper automatically."
+        )
+
+        val presets = arrayOf(
+            "System Dynamic" to "Material You / Auto",
+            "Dark" to "Slate precision",
+            "AMOLED" to "Pure #000000 black",
+            "Light" to "Crisp paper white"
+        )
+        val cardsList = ArrayList<MaterialCardView>(4)
+        val titlesList = ArrayList<TextView>(4)
+        val subsList = ArrayList<TextView>(4)
+
+        for (rowIdx in 0 until 2) {
+            val row = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                layoutParams = LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT
+                ).apply {
+                    if (rowIdx == 0) bottomMargin = dp(8)
+                }
+            }
+            for (colIdx in 0 until 2) {
+                val modeIdx = rowIdx * 2 + colIdx
+                val (title, sub) = presets[modeIdx]
+                val itemCard = MaterialCardView(this).apply {
+                    radius = dp(14).toFloat()
+                    cardElevation = 0f
+                    strokeWidth = dp(1)
+                    layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
+                        if (colIdx == 0) marginEnd = dp(8)
+                    }
+                    setOnClickListener {
+                        remotePrefs.themeMode = modeIdx
+                        updateThemePresetSelection(modeIdx)
+                    }
+                }
+                val inner = LinearLayout(this).apply {
+                    orientation = LinearLayout.VERTICAL
+                    setPadding(dp(12), dp(12), dp(12), dp(12))
+                }
+                val tvTitle = TextView(this).apply {
+                    text = title
+                    textSize = 14f
+                    typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
+                }
+                val tvSub = TextView(this).apply {
+                    text = sub
+                    textSize = 11.5f
+                    setPadding(0, dp(2), 0, 0)
+                }
+                inner.addView(tvTitle)
+                inner.addView(tvSub)
+                itemCard.addView(inner)
+
+                cardsList.add(itemCard)
+                titlesList.add(tvTitle)
+                subsList.add(tvSub)
+                row.addView(itemCard)
+            }
+            body.addView(row)
+        }
+        themePresetCards = cardsList.toTypedArray()
+        themePresetTitles = titlesList.toTypedArray()
+        themePresetSubtitles = subsList.toTypedArray()
+
+        return card
+    }
+
+    private fun buildCustomCssCard(): View {
+        val (card, body) = createCard(
+            title = "Custom CSS Style Sheet",
+            subtitle = "Fine-tune colors, radius, borders, shadows & font size (0 WebView, 0 MB)."
+        )
+
+        val cssToggleRow = createSwitchRow(
+            title = "Enable custom CSS overrides",
+            subtitle = "Applied live over your selected theme preset.",
+            checked = remotePrefs.customCssEnabled
+        ) { isChecked ->
+            remotePrefs.customCssEnabled = isChecked
+            updateCssStatusChip()
+        }
+        switchCustomCss = cssToggleRow.second
+        body.addView(cssToggleRow.first)
+
+        val actionRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply {
+                topMargin = dp(12)
+            }
+        }
+        val btnEdit = createTonalButton("Edit CSS Style Sheet") {
+            showCssEditorDialog()
+        }.apply {
+            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
+                marginEnd = dp(10)
+            }
+        }
+        cssStatusChip = createChip("CSS OFF", colSurfaceContainer, colOnSurfaceVariant, colOutlineVariant)
+        actionRow.addView(btnEdit)
+        actionRow.addView(cssStatusChip)
+        body.addView(actionRow)
+
+        return card
+    }
+
+    private fun buildLayoutAndFeelCard(): View {
+        val (card, body) = createCard(
+            title = "Layout & Feel",
+            subtitle = "Adjust keycap height, dedicated number row, labels, and haptics."
+        )
+
+        // Height header + Material 3 Slider (180..300 step 5)
+        val heightHeader = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        heightHeader.addView(TextView(this).apply {
+            text = "Keyboard height"
+            textSize = 15f
+            typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+            setTextColor(colOnSurface)
+            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+        })
+        heightValueChip = createChip("${snapHeightToStep(remotePrefs.keyboardHeightDp)} dp", colPrimaryContainer, colOnPrimaryContainer)
+        heightHeader.addView(heightValueChip)
+        body.addView(heightHeader)
+
+        heightSlider = Slider(this).apply {
+            valueFrom = KeyboardPrefs.MIN_HEIGHT_DP.toFloat()
+            valueTo = KeyboardPrefs.MAX_HEIGHT_DP.toFloat()
+            stepSize = 5f
+            value = snapHeightToStep(remotePrefs.keyboardHeightDp).toFloat()
+            addOnChangeListener { _, newValue, fromUser ->
+                val h = newValue.roundToInt()
+                heightValueChip.text = "$h dp"
+                if (fromUser && !isSyncingUi) {
+                    remotePrefs.keyboardHeightDp = h
+                }
+            }
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply {
+                topMargin = dp(4)
+            }
+        }
+        body.addView(heightSlider)
+
+        body.addView(createDivider())
+
+        val numRow = createSwitchRow(
+            title = "Dedicated number row",
+            subtitle = "Show a fixed 1–0 row above letters with stable panel height.",
+            checked = remotePrefs.showNumberRow
+        ) { remotePrefs.showNumberRow = it }
+        switchNumberRow = numRow.second
+        body.addView(numRow.first)
+
+        body.addView(createDivider())
+
+        val subRow = createSwitchRow(
+            title = "Show key sub-labels",
+            subtitle = "Display subtle secondary symbols on keycaps.",
+            checked = remotePrefs.showSubLabels
+        ) { remotePrefs.showSubLabels = it }
+        switchSubLabels = subRow.second
+        body.addView(subRow.first)
+
+        body.addView(createDivider())
+
+        val lpRow = createSwitchRow(
+            title = "Long-press for symbols",
+            subtitle = "Hold a letter key to insert its secondary symbol.",
+            checked = remotePrefs.longPressSymbols
+        ) { remotePrefs.longPressSymbols = it }
+        switchLongPress = lpRow.second
+        body.addView(lpRow.first)
+
+        body.addView(createDivider())
+
+        val hapRow = createSwitchRow(
+            title = "Haptic vibration",
+            subtitle = "Crisp tactile feedback on keypresses & swipe gestures.",
+            checked = remotePrefs.hapticEnabled
+        ) { remotePrefs.hapticEnabled = it }
+        switchHaptic = hapRow.second
+        body.addView(hapRow.first)
+
+        return card
+    }
+
+    // =========================================================================
+    // TAB 4 — ABOUT (PRIVACY, UPDATES, CLEAR USER DATA)
+    // =========================================================================
+
+    private fun buildAboutTab(): View {
+        val col = createTabColumn()
+
+        // Privacy & Updates Card
+        val (privacyCard, privacyBody) = createCard(
+            title = "Privacy & Auto-Updates",
+            subtitle = "Keyboard IME process stays 100% offline. Updates run strictly in :settings."
+        )
+
+        // Highlight banner: IME Process 100% Offline
+        val verifiedBanner = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            background = pillBg(colOkBg, 16)
+            setPadding(dp(14), dp(14), dp(14), dp(14))
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply {
+                bottomMargin = dp(12)
+            }
+        }
+        verifiedBanner.addView(TextView(this).apply {
+            text = "Keyboard Process 100% Offline"
+            textSize = 15f
+            typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
+            setTextColor(colOkText)
+        })
+        verifiedBanner.addView(TextView(this).apply {
+            text = "TrueLightIME contains zero networking code — keystrokes can never leave your device. Network access exists only inside the isolated :settings process when you tap Check for Updates."
+            textSize = 12.5f
+            setTextColor(colOkText)
+            alpha = 0.9f
+            setPadding(0, dp(4), 0, 0)
+        })
+        privacyBody.addView(verifiedBanner)
+
+        val metaRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(0, 0, 0, dp(12))
+        }
+        metaRow.addView(createChip("Version v${getAppVersionName()}", colPrimaryContainer, colOnPrimaryContainer).apply {
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply {
+                marginEnd = dp(8)
+            }
+        })
+        metaRow.addView(createChip("Isolated :settings M3 UI", colSurfaceContainer, colOnSurfaceVariant, colOutlineVariant))
+        privacyBody.addView(metaRow)
+
+        privacyBody.addView(TextView(this).apply {
+            text = "Downloads the latest APK directly from GitHub Releases, verifies SHA-256 checksum, and opens the Android installer."
+            textSize = 12.5f
+            setTextColor(colOnSurfaceVariant)
+            setPadding(0, 0, 0, dp(12))
+        })
+
+        lateinit var btnCheckUpdate: MaterialButton
+        btnCheckUpdate = createFilledButton("Check & Install Updates") {
+            checkAndInstallUpdate(btnCheckUpdate)
+        }.apply {
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply {
+                bottomMargin = dp(8)
+            }
+        }
+        privacyBody.addView(btnCheckUpdate)
+
+        privacyBody.addView(createOutlinedButton("Open GitHub Releases Page") {
+            openGitHubReleases()
+        }.apply {
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            )
+        })
+        col.addView(privacyCard)
+
+        // Local Data Management Card
+        val (dataCard, dataBody) = createCard(
+            title = "Local Data & Storage",
+            subtitle = "All learned words and emoji recents stay strictly on-device. Clipboard history lives in RAM only."
+        )
+
+        dataBody.addView(createOutlinedButton("Clear learned words, clipboard & emoji history") {
+            MaterialAlertDialogBuilder(this)
+                .setTitle("Clear local history?")
+                .setMessage("This will permanently erase learned words, custom imported dictionaries, clipboard history, and recent emojis.")
+                .setPositiveButton("Clear") { _, _ ->
+                    remotePrefs.clearAllUserData()
+                    refreshLanguagesList()
+                    refreshRamMonitor()
+                    Toast.makeText(this, "Cleared learned words, clipboard & emoji history", Toast.LENGTH_SHORT).show()
+                }
+                .setNegativeButton("Cancel", null)
+                .show()
+        }.apply {
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            )
+        })
+        col.addView(dataCard)
+
+        return col
+    }
+
+    // =========================================================================
+    // LIVE SYNC & TELEMETRY REFRESH
+    // =========================================================================
+
+    private fun snapHeightToStep(heightDp: Int): Int {
+        val clamped = heightDp.coerceIn(KeyboardPrefs.MIN_HEIGHT_DP, KeyboardPrefs.MAX_HEIGHT_DP)
+        val offset = clamped - KeyboardPrefs.MIN_HEIGHT_DP
+        val snapped = ((offset + 2) / 5) * 5 + KeyboardPrefs.MIN_HEIGHT_DP
+        return snapped.coerceIn(KeyboardPrefs.MIN_HEIGHT_DP, KeyboardPrefs.MAX_HEIGHT_DP)
+    }
+
+    private fun refreshRamMonitor() {
+        val stats = remotePrefs.getImeMemoryStats()
+        val totalMb = stats.totalPssKb / 1024f
+        val dalvikMb = stats.dalvikPssKb / 1024f
+        val nativeMb = stats.nativePssKb / 1024f
+
+        val totalStr = String.format(Locale.US, "%.1f MB", totalMb)
+        ramHeadlineView.text = totalStr
+        ramPidChip.text = if (stats.imePid > 0) "IME PID ${stats.imePid}" else "IME Standby"
+        ramPssMetricView.text = totalStr
+        ramDalvikMetricView.text = String.format(Locale.US, "%.1f MB", dalvikMb)
+        ramNativeMetricView.text = String.format(Locale.US, "%.1f MB", nativeMb)
+
+        ramLiveBarLabel.text = totalStr
+        ramLiveIndicator.progress = totalMb.roundToInt().coerceIn(2, RAM_SCALE_MAX_MB)
+
+        val sugStatus = if (remotePrefs.suggestionsEnabled) "ON (~1.5 MB)" else "OFF (0 MB)"
+        val clipStatus = if (remotePrefs.clipboardEnabled) "ON (~0.1 MB)" else "OFF (0 MB)"
+        val langCount = remotePrefs.enabledLanguages.size
+        ramFeatureSummaryView.text =
+            "Suggestions: $sugStatus  •  Clipboard: $clipStatus\n" +
+            "Languages: $langCount active  •  Emoji: Lazy + Auto-freed"
     }
 
     private fun refreshSetupStatus() {
@@ -1190,30 +1482,121 @@ class SettingsActivity : Activity() {
         val isDefault = defaultIme.startsWith("$packageName/")
 
         if (isEnabled) {
-            statusEnabledPill.text = "1. ENABLED"
-            statusEnabledPill.background = roundedBg(colOkBg, 8)
-            statusEnabledPill.setTextColor(colOkText)
+            statusEnabledChip.text = "1. Enabled ✓"
+            statusEnabledChip.background = pillBg(colOkBg, 100)
+            statusEnabledChip.setTextColor(colOkText)
         } else {
-            statusEnabledPill.text = "1. NOT ENABLED"
-            statusEnabledPill.background = roundedBg(colWarnBg, 8)
-            statusEnabledPill.setTextColor(colWarnText)
+            statusEnabledChip.text = "1. Not Enabled"
+            statusEnabledChip.background = pillBg(colWarnBg, 100)
+            statusEnabledChip.setTextColor(colWarnText)
         }
 
         if (isDefault) {
-            statusDefaultPill.text = "2. DEFAULT IME"
-            statusDefaultPill.background = roundedBg(colOkBg, 8)
-            statusDefaultPill.setTextColor(colOkText)
+            statusDefaultChip.text = "2. Default IME ✓"
+            statusDefaultChip.background = pillBg(colOkBg, 100)
+            statusDefaultChip.setTextColor(colOkText)
         } else {
-            statusDefaultPill.text = "2. NOT DEFAULT"
-            statusDefaultPill.background = roundedBg(colWarnBg, 8)
-            statusDefaultPill.setTextColor(colWarnText)
+            statusDefaultChip.text = "2. Not Default"
+            statusDefaultChip.background = pillBg(colWarnBg, 100)
+            statusDefaultChip.setTextColor(colWarnText)
+        }
+    }
+
+    private fun syncUiFromPrefs() {
+        isSyncingUi = true
+        try {
+            refreshLanguagesList()
+            updateThemePresetSelection(remotePrefs.themeMode)
+            updateCssStatusChip()
+            updateEnterLongPressSegments(remotePrefs.longPressEnterAction)
+
+            val snappedH = snapHeightToStep(remotePrefs.keyboardHeightDp)
+            heightValueChip.text = "$snappedH dp"
+            if (heightSlider.value.roundToInt() != snappedH) {
+                heightSlider.value = snappedH.toFloat()
+            }
+
+            viToneValueView.text = if (remotePrefs.vietnameseModernTone) {
+                "New style (hoà, hoè, thuý)"
+            } else {
+                "Old style (hòa, hòe, thúy)"
+            }
+
+            switchSuggestions.isChecked = remotePrefs.suggestionsEnabled
+            switchAutoCorrect.isEnabled = remotePrefs.suggestionsEnabled
+            switchAutoCorrect.isChecked = remotePrefs.autoCorrectEnabled
+            switchShowEmojiKey.isChecked = remotePrefs.showEmojiKey
+            switchAutoCaps.isChecked = remotePrefs.autoCapsEnabled
+            switchDoubleSpace.isChecked = remotePrefs.doubleSpacePeriodEnabled
+            switchClipboard.isChecked = remotePrefs.clipboardEnabled
+            switchCustomCss.isChecked = remotePrefs.customCssEnabled
+            switchNumberRow.isChecked = remotePrefs.showNumberRow
+            switchSubLabels.isChecked = remotePrefs.showSubLabels
+            switchLongPress.isChecked = remotePrefs.longPressSymbols
+            switchHaptic.isChecked = remotePrefs.hapticEnabled
+        } finally {
+            isSyncingUi = false
+        }
+    }
+
+    private fun updateEnterLongPressSegments(action: Int) {
+        val actions = intArrayOf(
+            KeyboardPrefs.ENTER_LONG_PRESS_EMOJI,
+            KeyboardPrefs.ENTER_LONG_PRESS_NEWLINE,
+            KeyboardPrefs.ENTER_LONG_PRESS_NONE
+        )
+        for (i in enterLongPressSegments.indices) {
+            val tv = enterLongPressSegments[i]
+            val selected = (actions[i] == action)
+            if (selected) {
+                tv.background = pillBg(colPrimaryContainer, 10)
+                tv.setTextColor(colOnPrimaryContainer)
+                tv.typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
+            } else {
+                tv.background = null
+                tv.setTextColor(colOnSurfaceVariant)
+                tv.typeface = Typeface.DEFAULT
+            }
+        }
+    }
+
+    private fun updateThemePresetSelection(selectedMode: Int) {
+        val active = selectedMode.coerceIn(0, themePresetCards.lastIndex)
+        for (i in themePresetCards.indices) {
+            val isSelected = (i == active)
+            val card = themePresetCards[i]
+            if (isSelected) {
+                card.setCardBackgroundColor(colPrimaryContainer)
+                card.strokeColor = colPrimary
+                card.strokeWidth = dp(2)
+                themePresetTitles[i].setTextColor(colOnPrimaryContainer)
+                themePresetSubtitles[i].setTextColor(colOnPrimaryContainer)
+            } else {
+                card.setCardBackgroundColor(colSurfaceContainer)
+                card.strokeColor = colOutlineVariant
+                card.strokeWidth = dp(1)
+                themePresetTitles[i].setTextColor(colOnSurface)
+                themePresetSubtitles[i].setTextColor(colOnSurfaceVariant)
+            }
+        }
+    }
+
+    private fun updateCssStatusChip() {
+        if (remotePrefs.customCssEnabled) {
+            cssStatusChip.text = "CSS Active"
+            cssStatusChip.background = pillBg(colOkBg, 100)
+            cssStatusChip.setTextColor(colOkText)
+        } else {
+            cssStatusChip.text = "CSS Off"
+            cssStatusChip.background = pillBg(colSurfaceContainer, 100, colOutlineVariant)
+            cssStatusChip.setTextColor(colOnSurfaceVariant)
         }
     }
 
     private fun refreshLanguagesList() {
         languagesContainer.removeAllViews()
-        val enabledIds = prefs.enabledLanguages
-        val activeId = prefs.activeLanguageId
+        val enabledIds = remotePrefs.enabledLanguages
+        val activeId = remotePrefs.activeLanguageId
         var hasVietnamese = false
 
         for (id in enabledIds) {
@@ -1224,16 +1607,20 @@ class SettingsActivity : Activity() {
             val row = LinearLayout(this).apply {
                 orientation = LinearLayout.HORIZONTAL
                 gravity = Gravity.CENTER_VERTICAL
-                background = roundedBg(colChipBg, 10, if (isActive) colAccent else colBorder)
-                setPadding(dp(12), dp(10), dp(10), dp(10))
+                background = pillBg(
+                    if (isActive) colPrimaryContainer else colSurfaceContainer,
+                    14,
+                    if (isActive) colPrimary else Color.TRANSPARENT
+                )
+                setPadding(dp(14), dp(11), dp(10), dp(11))
                 layoutParams = LinearLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT,
                     ViewGroup.LayoutParams.WRAP_CONTENT
                 ).apply {
-                    bottomMargin = dp(6)
+                    bottomMargin = dp(8)
                 }
                 setOnClickListener {
-                    prefs.activeLanguageId = spec.id
+                    remotePrefs.activeLanguageId = spec.id
                     refreshLanguagesList()
                     Toast.makeText(this@SettingsActivity, "Active: ${spec.displayName}", Toast.LENGTH_SHORT).show()
                 }
@@ -1245,24 +1632,24 @@ class SettingsActivity : Activity() {
             }
             infoCol.addView(TextView(this).apply {
                 text = spec.displayName
-                textSize = 14f
-                typeface = if (isActive) Typeface.DEFAULT_BOLD else Typeface.DEFAULT
-                setTextColor(if (isActive) colAccent else colText)
+                textSize = 14.5f
+                typeface = Typeface.create("sans-serif-medium", if (isActive) Typeface.BOLD else Typeface.NORMAL)
+                setTextColor(if (isActive) colOnPrimaryContainer else colOnSurface)
             })
-            val dictBadge = if (SuggestionManager.hasCustomDictionary(this, spec.dictKey)) {
+            val dictSubtitle = if (remotePrefs.hasCustomDictionary(spec.dictKey)) {
                 "${spec.nativeName} • Custom offline dict"
             } else {
                 spec.nativeName
             }
             infoCol.addView(TextView(this).apply {
-                text = dictBadge
+                text = dictSubtitle
                 textSize = 12f
-                setTextColor(colSubtext)
+                setTextColor(if (isActive) colOnPrimaryContainer else colOnSurfaceVariant)
             })
             row.addView(infoCol)
 
             if (isActive) {
-                row.addView(createMonoPill("ACTIVE", colAccent, colOnAccent).apply {
+                row.addView(createChip("Active", colPrimary, colOnPrimary).apply {
                     layoutParams = LinearLayout.LayoutParams(
                         ViewGroup.LayoutParams.WRAP_CONTENT,
                         ViewGroup.LayoutParams.WRAP_CONTENT
@@ -1273,18 +1660,17 @@ class SettingsActivity : Activity() {
             }
 
             if (enabledIds.size > 1) {
-                val removeBtn = TextView(this).apply {
+                row.addView(TextView(this).apply {
                     text = "✕"
-                    textSize = 15f
-                    setTextColor(colSubtext)
-                    setPadding(dp(10), dp(4), dp(6), dp(4))
+                    textSize = 16f
+                    setTextColor(if (isActive) colOnPrimaryContainer else colOnSurfaceVariant)
+                    setPadding(dp(10), dp(4), dp(8), dp(4))
                     setOnClickListener {
-                        prefs.removeLanguage(spec.id)
+                        remotePrefs.removeLanguage(spec.id)
                         refreshLanguagesList()
                         refreshRamMonitor()
                     }
-                }
-                row.addView(removeBtn)
+                })
             }
 
             languagesContainer.addView(row)
@@ -1293,28 +1679,29 @@ class SettingsActivity : Activity() {
         viToneRow.visibility = if (hasVietnamese) View.VISIBLE else View.GONE
     }
 
-    // --- DIALOGS ---
+    // =========================================================================
+    // MATERIAL 3 DIALOGS & ACTIONS
+    // =========================================================================
 
     private fun showCssEditorDialog() {
         val container = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            val p = dp(16)
-            setPadding(p, dp(12), p, dp(8))
+            setPadding(dp(18), dp(12), dp(18), dp(6))
         }
 
-        val initialCss = prefs.customCss.ifBlank { CssThemeParser.DEFAULT_CSS_TEMPLATE }
+        val initialCss = remotePrefs.customCss.ifBlank { CssThemeParser.DEFAULT_CSS_TEMPLATE }
         val editor = EditText(this).apply {
             setText(initialCss)
             typeface = Typeface.MONOSPACE
             textSize = 12.5f
-            setTextColor(colText)
-            background = roundedBg(colChipBg, 10, colBorder)
+            setTextColor(colOnSurface)
+            background = pillBg(colSurfaceContainer, 14, colOutlineVariant)
             gravity = Gravity.TOP or Gravity.START
             inputType = InputType.TYPE_CLASS_TEXT or
                 InputType.TYPE_TEXT_FLAG_MULTI_LINE or
                 InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
-            minLines = 10
-            maxLines = 15
+            minLines = 9
+            maxLines = 14
             setPadding(dp(12), dp(10), dp(12), dp(10))
             layoutParams = LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
@@ -1322,7 +1709,52 @@ class SettingsActivity : Activity() {
             )
         }
 
-        // Utility toolbar: Reset Default & Copy
+        // 1-tap CSS Presets horizontal bar
+        container.addView(TextView(this).apply {
+            text = "1-tap CSS Presets"
+            textSize = 12f
+            typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
+            setTextColor(colOnSurfaceVariant)
+            setPadding(0, 0, 0, dp(6))
+        })
+
+        val presetScroll = HorizontalScrollView(this).apply {
+            isHorizontalScrollBarEnabled = false
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply {
+                bottomMargin = dp(10)
+            }
+        }
+        val presetRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+        }
+        val cssPresets = arrayOf(
+            "Precision Dark" to CssThemeParser.DEFAULT_CSS_TEMPLATE,
+            "Paper Light" to CSS_PRESET_PAPER_LIGHT,
+            "AMOLED Pure" to CSS_PRESET_AMOLED_PURE,
+            "Nord Slate" to CSS_PRESET_NORD_SLATE
+        )
+        for ((name, cssBody) in cssPresets) {
+            presetRow.addView(createChip(name, colSecondaryContainer, colOnSecondaryContainer).apply {
+                setPadding(dp(12), dp(7), dp(12), dp(7))
+                layoutParams = LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT
+                ).apply {
+                    marginEnd = dp(8)
+                }
+                setOnClickListener {
+                    editor.setText(cssBody)
+                    Toast.makeText(this@SettingsActivity, "Loaded $name preset", Toast.LENGTH_SHORT).show()
+                }
+            })
+        }
+        presetScroll.addView(presetRow)
+        container.addView(presetScroll)
+
+        // Reset & Copy row
         val toolRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             layoutParams = LinearLayout.LayoutParams(
@@ -1332,15 +1764,15 @@ class SettingsActivity : Activity() {
                 bottomMargin = dp(10)
             }
         }
-        val btnReset = createButton("Reset Default", primary = false) {
+        val btnReset = createOutlinedButton("Reset") {
             editor.setText(CssThemeParser.DEFAULT_CSS_TEMPLATE)
-            Toast.makeText(this, "Loaded default CSS template", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, "Reset to default CSS template", Toast.LENGTH_SHORT).show()
         }.apply {
             layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
                 marginEnd = dp(8)
             }
         }
-        val btnCopy = createButton("Copy", primary = false) {
+        val btnCopy = createOutlinedButton("Copy") {
             val cm = getSystemService(CLIPBOARD_SERVICE) as ClipboardManager
             cm.setPrimaryClip(ClipData.newPlainText("True Light CSS", editor.text.toString()))
             Toast.makeText(this, "CSS copied to clipboard", Toast.LENGTH_SHORT).show()
@@ -1349,17 +1781,15 @@ class SettingsActivity : Activity() {
         }
         toolRow.addView(btnReset)
         toolRow.addView(btnCopy)
-
         container.addView(toolRow)
         container.addView(editor)
 
-        AlertDialog.Builder(this)
+        MaterialAlertDialogBuilder(this)
             .setTitle("Custom CSS Style Sheet")
             .setView(container)
             .setPositiveButton("Apply") { _, _ ->
-                val text = editor.text.toString()
-                prefs.customCss = text
-                prefs.customCssEnabled = true
+                remotePrefs.customCss = editor.text.toString()
+                remotePrefs.customCssEnabled = true
                 syncUiFromPrefs()
                 Toast.makeText(this, "Custom CSS style applied", Toast.LENGTH_SHORT).show()
             }
@@ -1368,19 +1798,19 @@ class SettingsActivity : Activity() {
     }
 
     private fun showAddLanguageDialog() {
-        val enabled = prefs.enabledLanguages.toSet()
+        val enabled = remotePrefs.enabledLanguages.toSet()
         val available = LanguageRegistry.ALL_LANGUAGES.filter { it.id !in enabled }
         if (available.isEmpty()) {
             Toast.makeText(this, "All Group 1 languages are already added", Toast.LENGTH_SHORT).show()
             return
         }
         val labels = available.map { "${it.displayName} (${it.nativeName})" }.toTypedArray()
-        AlertDialog.Builder(this)
+        MaterialAlertDialogBuilder(this)
             .setTitle("Add Language")
             .setItems(labels) { _, which ->
                 val chosen = available[which]
-                prefs.addLanguage(chosen.id)
-                prefs.activeLanguageId = chosen.id
+                remotePrefs.addLanguage(chosen.id)
+                remotePrefs.activeLanguageId = chosen.id
                 syncUiFromPrefs()
                 refreshRamMonitor()
             }
@@ -1393,11 +1823,11 @@ class SettingsActivity : Activity() {
             "Old style (hòa, hòe, thúy)",
             "New style (hoà, hoè, thuý)"
         )
-        val current = if (prefs.vietnameseModernTone) 1 else 0
-        AlertDialog.Builder(this)
+        val current = if (remotePrefs.vietnameseModernTone) 1 else 0
+        MaterialAlertDialogBuilder(this)
             .setTitle("Vietnamese Tone Placement")
             .setSingleChoiceItems(options, current) { dialog, which ->
-                prefs.vietnameseModernTone = (which == 1)
+                remotePrefs.vietnameseModernTone = (which == 1)
                 syncUiFromPrefs()
                 dialog.dismiss()
             }
@@ -1406,9 +1836,9 @@ class SettingsActivity : Activity() {
     }
 
     private fun showImportDictionaryLanguagePicker() {
-        val enabledSpecs = prefs.enabledLanguages.map { LanguageRegistry.getById(it) }
+        val enabledSpecs = remotePrefs.enabledLanguages.map { LanguageRegistry.getById(it) }
         val labels = enabledSpecs.map { "${it.displayName} [${it.dictKey}]" }.toTypedArray()
-        AlertDialog.Builder(this)
+        MaterialAlertDialogBuilder(this)
             .setTitle("Import Offline Wordlist (.txt) for:")
             .setItems(labels) { _, which ->
                 pendingImportDictKey = enabledSpecs[which].dictKey
@@ -1426,14 +1856,161 @@ class SettingsActivity : Activity() {
         try {
             contentResolver.openInputStream(uri)?.use { stream ->
                 val text = BufferedReader(InputStreamReader(stream, Charsets.UTF_8)).readText()
-                val count = SuggestionManager.importCustomDictionary(this, dictKey, text)
-                prefs.bumpDictRevision()
+                val count = remotePrefs.importDictionary(dictKey, text)
                 refreshLanguagesList()
                 refreshRamMonitor()
                 Toast.makeText(this, "Imported $count words for [$dictKey]", Toast.LENGTH_LONG).show()
             }
         } catch (e: Exception) {
             Toast.makeText(this, "Import failed: ${e.message}", Toast.LENGTH_LONG).show()
+        }
+    }
+
+    private fun checkAndInstallUpdate(triggerButton: MaterialButton) {
+        val currentVer = getAppVersionName()
+        triggerButton.isEnabled = false
+        triggerButton.text = "Checking GitHub..."
+
+        Thread {
+            val result = GitHubUpdater.checkLatestRelease(currentVer)
+            runOnUiThread {
+                if (isFinishing || isDestroyed) return@runOnUiThread
+                triggerButton.isEnabled = true
+                triggerButton.text = "Check & Install Updates"
+
+                when (result) {
+                    is GitHubUpdater.CheckResult.UpdateAvailable -> {
+                        val rel = result.release
+                        val asset = rel.apkAsset
+                        val sizeText = if (asset != null && asset.sizeBytes > 0) {
+                            String.format(Locale.US, "%.2f MB", asset.sizeBytes / (1024f * 1024f))
+                        } else {
+                            "Unknown size"
+                        }
+                        val notesPreview = rel.notes.ifBlank { "Bug fixes and improvements." }.take(600)
+                        val msg = "New version ${rel.tagName} available (current: v$currentVer)\n" +
+                            "Package: ${asset?.name ?: "No APK"} ($sizeText)\n\n$notesPreview"
+
+                        val builder = MaterialAlertDialogBuilder(this)
+                            .setTitle("Update Available: ${rel.title}")
+                            .setMessage(msg)
+                            .setNegativeButton("Later", null)
+                            .setNeutralButton("Browser") { _, _ -> openGitHubReleases() }
+
+                        if (asset != null) {
+                            builder.setPositiveButton("Download & Install") { _, _ ->
+                                startApkDownloadAndInstall(rel)
+                            }
+                        }
+                        builder.show()
+                    }
+                    is GitHubUpdater.CheckResult.UpToDate -> {
+                        MaterialAlertDialogBuilder(this)
+                            .setTitle("You're up to date")
+                            .setMessage("True Light v${result.currentVersion} is the latest release (GitHub latest: ${result.latestTag}).")
+                            .setPositiveButton("OK", null)
+                            .setNeutralButton("View Releases") { _, _ -> openGitHubReleases() }
+                            .show()
+                    }
+                    is GitHubUpdater.CheckResult.Error -> {
+                        MaterialAlertDialogBuilder(this)
+                            .setTitle("Update Check Failed")
+                            .setMessage("${result.message}\n\nYou can still check GitHub Releases manually in your browser.")
+                            .setPositiveButton("Open Browser") { _, _ -> openGitHubReleases() }
+                            .setNegativeButton("Close", null)
+                            .show()
+                    }
+                }
+            }
+        }.start()
+    }
+
+    private fun startApkDownloadAndInstall(release: GitHubUpdater.ReleaseInfo) {
+        val progressBox = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(22), dp(16), dp(22), dp(12))
+        }
+        val statusText = TextView(this).apply {
+            text = "Downloading ${release.apkAsset?.name ?: "update"}..."
+            textSize = 13.5f
+            setTextColor(colOnSurface)
+            setPadding(0, 0, 0, dp(10))
+        }
+        val progressBar = LinearProgressIndicator(this).apply {
+            max = 100
+            progress = 0
+            isIndeterminate = true
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            )
+        }
+        progressBox.addView(statusText)
+        progressBox.addView(progressBar)
+
+        val dialog = MaterialAlertDialogBuilder(this)
+            .setTitle("Downloading ${release.tagName}")
+            .setView(progressBox)
+            .setCancelable(false)
+            .show()
+
+        Thread {
+            val dl = GitHubUpdater.downloadAndVerify(this, release) { read, total ->
+                runOnUiThread {
+                    if (isFinishing || isDestroyed) return@runOnUiThread
+                    if (total > 0) {
+                        val pct = ((read * 100) / total).toInt().coerceIn(0, 100)
+                        if (progressBar.isIndeterminate) progressBar.isIndeterminate = false
+                        progressBar.progress = pct
+                        statusText.text = String.format(
+                            Locale.US,
+                            "Downloading... %d%% (%.2f / %.2f MB)",
+                            pct,
+                            read / (1024f * 1024f),
+                            total / (1024f * 1024f)
+                        )
+                    } else {
+                        statusText.text = String.format(Locale.US, "Downloading... %.2f MB", read / (1024f * 1024f))
+                    }
+                }
+            }
+
+            runOnUiThread {
+                if (isFinishing || isDestroyed) return@runOnUiThread
+                dialog.dismiss()
+                when (dl) {
+                    is GitHubUpdater.DownloadResult.Ready -> {
+                        val shaNote = if (dl.shaVerified) " (SHA-256 verified ✓)" else ""
+                        val launched = GitHubUpdater.launchApkInstaller(this, dl.apkFile)
+                        if (launched) {
+                            Toast.makeText(this, "Installing ${release.tagName}$shaNote", Toast.LENGTH_LONG).show()
+                        } else {
+                            Toast.makeText(
+                                this,
+                                "Allow 'Install unknown apps' for True Light, then tap Check & Install Updates again",
+                                Toast.LENGTH_LONG
+                            ).show()
+                        }
+                    }
+                    is GitHubUpdater.DownloadResult.Error -> {
+                        MaterialAlertDialogBuilder(this)
+                            .setTitle("Download Failed")
+                            .setMessage(dl.message)
+                            .setPositiveButton("Open Browser") { _, _ -> openGitHubReleases() }
+                            .setNegativeButton("Close", null)
+                            .show()
+                    }
+                }
+            }
+        }.start()
+    }
+
+    private fun openGitHubReleases() {
+        try {
+            val intent = Intent(Intent.ACTION_VIEW, Uri.parse(KeyboardPrefs.GITHUB_RELEASES_URL))
+            startActivity(intent)
+        } catch (_: Exception) {
+            Toast.makeText(this, "No browser found to open GitHub Releases", Toast.LENGTH_SHORT).show()
         }
     }
 }

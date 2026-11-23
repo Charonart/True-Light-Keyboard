@@ -433,6 +433,29 @@ class InputConnectionBroker {
         return true
     }
 
+    /**
+     * Explicit Newline Insertion (e.g. Long-Press Enter = Insert Newline):
+     * Commits active composing text (if any) and inserts a literal "\n".
+     */
+    fun handleInsertNewline(engine: InputEngine, suggestionManager: SuggestionManager? = null): Boolean {
+        val ic = inputConnection ?: return false
+        lastCommittedFromSuggestion = false
+        lastSpaceTimeMs = 0L
+
+        withBatchEdit {
+            if (engine.length() > 0) {
+                val typed = engine.getComposingText()
+                ic.finishComposingText()
+                engine.reset()
+                suggestionManager?.learnCommittedWord(typed)
+                suggestionManager?.clearSuggestions()
+            }
+            suggestionManager?.clearUndo()
+            ic.commitText("\n", 1)
+        }
+        return true
+    }
+
     fun sendDirectKeyEvent(keyCode: Int) {
         val ic = inputConnection ?: return
         val now = SystemClock.uptimeMillis()

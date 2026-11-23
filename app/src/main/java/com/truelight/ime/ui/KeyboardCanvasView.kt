@@ -42,6 +42,7 @@ class KeyboardCanvasView(context: Context) : View(context) {
         fun onDeleteWord()
         fun onMoveCursor(delta: Int)
         fun onEnter()
+        fun onInsertNewline()
         fun onEmoji(emoji: String)
         fun onLanguageToggle()
         fun onOpenSettings()
@@ -99,6 +100,7 @@ class KeyboardCanvasView(context: Context) : View(context) {
     var keyboardHeightDp: Int = KeyboardPrefs.DEFAULT_HEIGHT_DP
     var hapticEnabled: Boolean = true
     var longPressSymbolsEnabled: Boolean = true
+    var longPressEnterAction: Int = KeyboardPrefs.ENTER_LONG_PRESS_EMOJI
 
     private val stripHeightPx: Float = 38f * density
     private val stripSideBtnWidthPx: Float = 44f * density
@@ -155,6 +157,20 @@ class KeyboardCanvasView(context: Context) : View(context) {
             val slot = longPressSlot
             if (slot !in 0 until MAX_POINTERS) return
             val key = pointerKeys[slot] ?: return
+
+            if (key.type == KeyModel.TYPE_ENTER) {
+                pointerLongPressConsumed[slot] = true
+                longPressSlot = -1
+                releaseKeyVisual(key, slot)
+                pointerKeys[slot] = null
+                triggerHaptic()
+                invalidate()
+                when (longPressEnterAction) {
+                    KeyboardPrefs.ENTER_LONG_PRESS_EMOJI -> setEmojiMode(true)
+                    KeyboardPrefs.ENTER_LONG_PRESS_NEWLINE -> actionListener?.onInsertNewline()
+                }
+                return
+            }
 
             if (key.type == KeyModel.TYPE_SWITCH_LANG) {
                 pointerLongPressConsumed[slot] = true
@@ -234,20 +250,34 @@ class KeyboardCanvasView(context: Context) : View(context) {
         longPressSymbols: Boolean,
         haptic: Boolean,
         languageSpec: LanguageSpec,
-        multipleLanguages: Boolean
+        multipleLanguages: Boolean,
+        longPressEnterAction: Int = KeyboardPrefs.ENTER_LONG_PRESS_EMOJI,
+        showEmojiKey: Boolean = true
     ) {
         theme.applyTheme(context, themeMode, customCssEnabled, customCss)
         emojiPanel?.syncThemeColors()
         keyboardHeightDp = heightDp
         hapticEnabled = haptic
         longPressSymbolsEnabled = longPressSymbols
-        layout.setDisplayOptions(showNumberRow, showSubLabels)
+        this.longPressEnterAction = longPressEnterAction
+        layout.setDisplayOptions(showNumberRow, showSubLabels, showEmojiKey)
         layout.setLanguage(languageSpec, multipleLanguages)
         requestLayout()
         if (width > 0 && height > 0) {
             remeasureInternal(width, height)
         }
         invalidate()
+    }
+
+    /**
+     * Releases lazy-loaded Emoji panel & font/glyph caches immediately when the keyboard hides,
+     * keeping background IME RAM minimal.
+     */
+    fun releaseTransientUiMemory() {
+        if (!isEmojiMode) {
+            emojiPanel?.detach()
+            emojiPanel = null
+        }
     }
 
     fun applyHeightOnly(heightDp: Int) {
@@ -442,6 +472,20 @@ class KeyboardCanvasView(context: Context) : View(context) {
             KeyModel.TYPE_ENTER -> {
                 val paint = if (key.isPressed) theme.iconPaint else theme.iconOnAccentPaint
                 drawContextualEnterIcon(canvas, b, paint)
+                if (longPressEnterAction == KeyboardPrefs.ENTER_LONG_PRESS_EMOJI &&
+                    layout.currentMode != KeyboardLayout.Mode.NUMPAD
+                ) {
+                    val dotPaint = if (key.isPressed) theme.iconFillPaint else theme.iconOnAccentFillPaint
+                    val prevAlpha = dotPaint.alpha
+                    dotPaint.alpha = 185
+                    canvas.drawCircle(
+                        b.right - 6.5f * density,
+                        b.top + 6.5f * density,
+                        2.0f * density,
+                        dotPaint
+                    )
+                    dotPaint.alpha = prevAlpha
+                }
             }
             KeyModel.TYPE_EMOJI -> {
                 drawEmojiSmileyIcon(canvas, b)
@@ -1156,6 +1200,14 @@ class KeyboardCanvasView(context: Context) : View(context) {
                     if (!shiftWasActiveBeforeHold) {
                         layout.updateShiftState(shifted = true, caps = false)
                     }
+                }
+            }
+
+            KeyModel.TYPE_ENTER -> {
+                if (longPressEnterAction != KeyboardPrefs.ENTER_LONG_PRESS_NONE) {
+                    mainHandler.removeCallbacks(longPressRunnable)
+                    longPressSlot = slot
+                    mainHandler.postDelayed(longPressRunnable, 360L)
                 }
             }
 

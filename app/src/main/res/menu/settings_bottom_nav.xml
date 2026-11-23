@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<menu xmlns:android="http://schemas.android.com/apk/res/android">
+    <item
+        android:id="@+id/nav_home"
+        android:icon="@drawable/ic_nav_home"
+        android:title="Home" />
+    <item
+        android:id="@+id/nav_typing"
+        android:icon="@drawable/ic_nav_typing"
+        android:title="Typing" />
+    <item
+        android:id="@+id/nav_style"
+        android:icon="@drawable/ic_nav_style"
+        android:title="Style" />
+    <item
+        android:id="@+id/nav_about"
+        android:icon="@drawable/ic_nav_about"
+        android:title="About" />
+</menu>

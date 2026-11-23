@@ -1,8 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
-    <!-- 0 INTERNET PERMISSION - 100% OFFLINE AND PRIVATE -->
     <uses-permission android:name="android.permission.VIBRATE" />
+    <!-- Used STRICTLY inside the isolated :settings process for on-demand GitHub Release updates.
+         The TrueLightIME keyboard process contains ZERO networking code and remains 100% offline. -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 
     <application
         android:allowBackup="false"
@@ -11,10 +14,13 @@
         android:supportsRtl="true"
         android:theme="@style/Theme.TrueLight">
 
+        <!-- Isolated :settings process so Material 3 / AndroidX / Updater NEVER consume RAM in the IME process -->
         <activity
             android:name=".settings.SettingsActivity"
             android:label="@string/app_name"
             android:exported="true"
+            android:launchMode="singleTop"
+            android:process=":settings"
             android:theme="@style/Theme.TrueLight.Settings"
             android:windowSoftInputMode="adjustResize">
             <intent-filter>
@@ -22,6 +28,24 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!-- FileProvider for launching Android Package Installer on downloaded update APKs (:settings process only) -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="com.truelight.ime.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true"
+            android:process=":settings">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
+
+        <!-- Private IPC bridge living in the main IME process for instant settings sync & accurate IME-only RAM telemetry -->
+        <provider
+            android:name=".config.PrefsProvider"
+            android:authorities="com.truelight.ime.prefs"
+            android:exported="false" />
 
         <service
             android:name=".TrueLightIME"

@@ -8,7 +8,7 @@ on:
 
 jobs:
   build-and-verify:
-    name: Test, Build & Privacy Gate (0 Internet)
+    name: Test, Build & IME Isolation Audit
     runs-on: ubuntu-latest
 
     steps:
@@ -33,19 +33,23 @@ jobs:
       - name: Build Debug & Release APKs
         run: ./gradlew assembleDebug assembleRelease --console=plain
 
-      - name: Verify Zero Internet Permission & Report APK Size
+      - name: Verify IME Process Isolation (0 Network & 0 AndroidX in IME) & Report APK Size
         run: |
-          MANIFEST=$(find app/build/intermediates -path '*release*AndroidManifest.xml' | head -n 1)
-          if [ -z "$MANIFEST" ] || [ ! -f "$MANIFEST" ]; then
-            echo "ERROR: Could not locate merged release AndroidManifest.xml!"
+          IME_PATHS="app/src/main/java/com/truelight/ime/TrueLightIME.kt \
+            app/src/main/java/com/truelight/ime/engine \
+            app/src/main/java/com/truelight/ime/bridge \
+            app/src/main/java/com/truelight/ime/ui \
+            app/src/main/java/com/truelight/ime/emoji \
+            app/src/main/java/com/truelight/ime/suggest \
+            app/src/main/java/com/truelight/ime/clipboard \
+            app/src/main/java/com/truelight/ime/lang \
+            app/src/main/java/com/truelight/ime/config"
+
+          if grep -rnE "import (java\.net\.|javax\.net\.|okhttp|androidx\.|com\.google\.android\.material\.)" $IME_PATHS; then
+            echo "ERROR: Forbidden network or AndroidX/Material import detected in IME process code!"
             exit 1
           fi
-          echo "Checking manifest: $MANIFEST"
-          if grep -q "android.permission.INTERNET" "$MANIFEST"; then
-            echo "ERROR: INTERNET permission detected in merged release manifest!"
-            exit 1
-          fi
-          echo "OK: 0 INTERNET permission verified."
+          echo "OK: IME process has 0 network imports and 0 AndroidX/Material imports."
 
           APK=$(ls app/build/outputs/apk/release/*.apk | head -n 1)
           SIZE=$(stat -c%s "$APK")

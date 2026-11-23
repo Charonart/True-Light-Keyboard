@@ -36,6 +36,13 @@ class KeyboardPrefs(context: Context) {
         const val KEY_DICT_REVISION = "dict_revision"
         const val KEY_HISTORY_REVISION = "history_revision"
 
+        const val KEY_LONG_PRESS_ENTER_ACTION = "long_press_enter_action"
+        const val ENTER_LONG_PRESS_NONE = 0
+        const val ENTER_LONG_PRESS_EMOJI = 1
+        const val ENTER_LONG_PRESS_NEWLINE = 2
+
+        const val KEY_SHOW_EMOJI_KEY = "show_emoji_key"
+
         const val THEME_SYSTEM = 0
         const val THEME_DARK = 1
         const val THEME_AMOLED = 2
@@ -182,4 +189,15 @@ class KeyboardPrefs(context: Context) {
     fun bumpHistoryRevision() {
         historyRevision = historyRevision + 1
     }
+
+    var longPressEnterAction: Int
+        get() = prefs.getInt(KEY_LONG_PRESS_ENTER_ACTION, ENTER_LONG_PRESS_EMOJI)
+            .coerceIn(ENTER_LONG_PRESS_NONE, ENTER_LONG_PRESS_NEWLINE)
+        set(value) = prefs.edit()
+            .putInt(KEY_LONG_PRESS_ENTER_ACTION, value.coerceIn(ENTER_LONG_PRESS_NONE, ENTER_LONG_PRESS_NEWLINE))
+            .apply()
+
+    var showEmojiKey: Boolean
+        get() = prefs.getBoolean(KEY_SHOW_EMOJI_KEY, true)
+        set(value) = prefs.edit().putBoolean(KEY_SHOW_EMOJI_KEY, value).apply()
 }

@@ -1,9 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <!-- Pure Android Framework theme for the main IME process (zero Material / AndroidX overhead) -->
     <style name="Theme.TrueLight" parent="android:Theme.DeviceDefault.InputMethod">
         <item name="android:windowBackground">@android:color/transparent</item>
         <item name="android:colorBackground">@color/bg_keyboard</item>
     </style>
 
-    <style name="Theme.TrueLight.Settings" parent="android:Theme.DeviceDefault.NoActionBar" />
+    <!-- Material Design 3 Dynamic Color DayNight theme for the isolated :settings process -->
+    <style name="Theme.TrueLight.Settings" parent="Theme.Material3.DynamicColors.DayNight.NoActionBar" />
 </resources>
