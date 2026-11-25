@@ -34,7 +34,15 @@ class KeyboardLayout(private val theme: KeyboardTheme) {
     var hasMultipleLanguages = false
         private set
 
+    var horizontalOffsetX: Float = 0f
+        private set
+
+    var contentWidth: Int = 0
+        private set
+
     private var lastWidth = 0
+    private var lastStartX = 0f
+    private var lastActiveWidth = 0
     private var lastTopOffset = 0f
     private var lastKeyAreaHeight = 0f
 
@@ -66,7 +74,7 @@ class KeyboardLayout(private val theme: KeyboardTheme) {
         buildSymbolKeys()
         buildSymbolShiftKeys()
         if (lastWidth > 0 && lastKeyAreaHeight > 0f) {
-            measure(lastWidth, lastTopOffset, lastKeyAreaHeight)
+            measure(lastWidth, lastTopOffset, lastKeyAreaHeight, lastStartX, lastActiveWidth)
         }
     }
 
@@ -96,7 +104,7 @@ class KeyboardLayout(private val theme: KeyboardTheme) {
                 updateShiftState(isShifted, isCapsLock)
             }
             if (lastWidth > 0 && lastKeyAreaHeight > 0f) {
-                measure(lastWidth, lastTopOffset, lastKeyAreaHeight)
+                measure(lastWidth, lastTopOffset, lastKeyAreaHeight, lastStartX, lastActiveWidth)
             }
         }
     }
@@ -260,24 +268,42 @@ class KeyboardLayout(private val theme: KeyboardTheme) {
         }
     }
 
-    fun measure(width: Int, topOffset: Float, keyAreaHeight: Float) {
+    fun measure(
+        width: Int,
+        topOffset: Float,
+        keyAreaHeight: Float,
+        startX: Float = 0f,
+        activeWidth: Int = width
+    ) {
+        val safeActiveW = if (activeWidth > 0) activeWidth.coerceAtMost(width.coerceAtLeast(1)) else width
         lastWidth = width
+        lastStartX = startX
+        lastActiveWidth = safeActiveW
         lastTopOffset = topOffset
         lastKeyAreaHeight = keyAreaHeight
+        horizontalOffsetX = startX
+        contentWidth = safeActiveW
 
         val mh = theme.keyMarginH
         val mv = theme.keyMarginV
 
-        measureAlpha(width, topOffset, keyAreaHeight, mh, mv)
+        measureAlpha(startX, safeActiveW, topOffset, keyAreaHeight, mh, mv)
 
         // Symbols, Symbols-Shift, and Numpad fill the exact same keyAreaHeight -> zero vertical jump
         val rowHeight4 = keyAreaHeight / 4f
-        measureSymbols(width, topOffset, rowHeight4, mh, mv)
-        measureSymbolShift(width, topOffset, rowHeight4, mh, mv)
-        measureNumpad(width, topOffset, rowHeight4, mh, mv)
+        measureSymbols(startX, safeActiveW, topOffset, rowHeight4, mh, mv)
+        measureSymbolShift(startX, safeActiveW, topOffset, rowHeight4, mh, mv)
+        measureNumpad(startX, safeActiveW, topOffset, rowHeight4, mh, mv)
     }
 
-    private fun measureAlpha(width: Int, topOffset: Float, keyAreaHeight: Float, mh: Float, mv: Float) {
+    private fun measureAlpha(
+        startX: Float,
+        width: Int,
+        topOffset: Float,
+        keyAreaHeight: Float,
+        mh: Float,
+        mv: Float
+    ) {
         val totalRows = if (showNumberRow) 5 else 4
         val rowHeight = keyAreaHeight / totalRows.toFloat()
         var idx = 0
@@ -286,7 +312,7 @@ class KeyboardLayout(private val theme: KeyboardTheme) {
         // Optional number row (10 keys)
         if (showNumberRow) {
             val kwNum = (width - mh * 20) / 10f
-            var x = mh
+            var x = startX + mh
             val y = topOffset + curRow * rowHeight + mv
             for (i in 0 until 10) {
                 alphaKeys[idx++].bounds.set(x, y, x + kwNum, y + rowHeight - mv * 2)
@@ -297,7 +323,7 @@ class KeyboardLayout(private val theme: KeyboardTheme) {
 
         // Row 0: r0Count keys (10 or 11 for Russian)
         val kw0 = (width - mh * (r0Count * 2)) / r0Count.toFloat()
-        var x = mh
+        var x = startX + mh
         var y = topOffset + curRow * rowHeight + mv
         for (i in 0 until r0Count) {
             alphaKeys[idx++].bounds.set(x, y, x + kw0, y + rowHeight - mv * 2)
@@ -309,7 +335,7 @@ class KeyboardLayout(private val theme: KeyboardTheme) {
         val kw1 = if (r1Count <= r0Count) kw0 else (width - mh * (r1Count * 2)) / r1Count.toFloat()
         val row1TotalW = kw1 * r1Count + mh * (r1Count * 2)
         val offsetR1 = ((width - row1TotalW) / 2f).coerceAtLeast(0f)
-        x = offsetR1 + mh
+        x = startX + offsetR1 + mh
         y = topOffset + curRow * rowHeight + mv
         for (i in 0 until r1Count) {
             alphaKeys[idx++].bounds.set(x, y, x + kw1, y + rowHeight - mv * 2)
@@ -323,7 +349,7 @@ class KeyboardLayout(private val theme: KeyboardTheme) {
         val totalColsR2 = r2LetterCount + 2
         val middleW = (width - specialW * 2 - mh * (totalColsR2 * 2)) / r2LetterCount.toFloat()
         y = topOffset + curRow * rowHeight + mv
-        x = mh
+        x = startX + mh
         alphaKeys[idx++].bounds.set(x, y, x + specialW, y + rowHeight - mv * 2) // Shift
         x += specialW + mh * 2
         for (i in 0 until r2LetterCount) {
@@ -358,7 +384,7 @@ class KeyboardLayout(private val theme: KeyboardTheme) {
             width - (fixedW + mh * (row3KeyCount * 2f))
         ).coerceAtLeast(kw10 * 2f)
 
-        x = mh
+        x = startX + mh
         alphaKeys[idx++].bounds.set(x, y, x + sideKeyW, y + rowHeight - mv * 2) // ?123
         x += sideKeyW + mh * 2
         if (showEmojiKey) {
@@ -378,15 +404,22 @@ class KeyboardLayout(private val theme: KeyboardTheme) {
         alphaKeys[idx].bounds.set(x, y, x + enterW, y + rowHeight - mv * 2) // Enter
     }
 
-    private fun measureSymbols(width: Int, topOffset: Float, rowHeight: Float, mh: Float, mv: Float) {
+    private fun measureSymbols(
+        startX: Float,
+        width: Int,
+        topOffset: Float,
+        rowHeight: Float,
+        mh: Float,
+        mv: Float
+    ) {
         val kw10 = (width - mh * 20) / 10f
-        var x = mh
+        var x = startX + mh
         var y = topOffset + mv
         for (i in 0 until 10) {
             symbolKeys[i].bounds.set(x, y, x + kw10, y + rowHeight - mv * 2)
             x += kw10 + mh * 2
         }
-        x = mh
+        x = startX + mh
         y = topOffset + rowHeight + mv
         for (i in 10 until 20) {
             symbolKeys[i].bounds.set(x, y, x + kw10, y + rowHeight - mv * 2)
@@ -396,7 +429,7 @@ class KeyboardLayout(private val theme: KeyboardTheme) {
         val specialW = kw10 * 1.4f
         val middleW = (width - specialW * 2 - mh * 18) / 7f
         y = topOffset + rowHeight * 2 + mv
-        x = mh
+        x = startX + mh
         symbolKeys[20].bounds.set(x, y, x + specialW, y + rowHeight - mv * 2)
         x += specialW + mh * 2
         for (i in 21 until 28) {
@@ -418,7 +451,7 @@ class KeyboardLayout(private val theme: KeyboardTheme) {
         ).coerceAtLeast(kw10 * 2f)
 
         var idx = 29
-        x = mh
+        x = startX + mh
         symbolKeys[idx++].bounds.set(x, y, x + sideKeyW, y + rowHeight - mv * 2)
         x += sideKeyW + mh * 2
         if (showEmojiKey) {
@@ -434,15 +467,22 @@ class KeyboardLayout(private val theme: KeyboardTheme) {
         symbolKeys[idx].bounds.set(x, y, x + enterW, y + rowHeight - mv * 2)
     }
 
-    private fun measureSymbolShift(width: Int, topOffset: Float, rowHeight: Float, mh: Float, mv: Float) {
+    private fun measureSymbolShift(
+        startX: Float,
+        width: Int,
+        topOffset: Float,
+        rowHeight: Float,
+        mh: Float,
+        mv: Float
+    ) {
         val kw10 = (width - mh * 20) / 10f
-        var x = mh
+        var x = startX + mh
         var y = topOffset + mv
         for (i in 0 until 10) {
             symbolShiftKeys[i].bounds.set(x, y, x + kw10, y + rowHeight - mv * 2)
             x += kw10 + mh * 2
         }
-        x = mh
+        x = startX + mh
         y = topOffset + rowHeight + mv
         for (i in 10 until 20) {
             symbolShiftKeys[i].bounds.set(x, y, x + kw10, y + rowHeight - mv * 2)
@@ -452,7 +492,7 @@ class KeyboardLayout(private val theme: KeyboardTheme) {
         val specialW = kw10 * 1.5f
         val middleW = (width - specialW * 2 - mh * 16) / 6f
         y = topOffset + rowHeight * 2 + mv
-        x = mh
+        x = startX + mh
         symbolShiftKeys[20].bounds.set(x, y, x + specialW, y + rowHeight - mv * 2)
         x += specialW + mh * 2
         for (i in 21 until 27) {
@@ -474,7 +514,7 @@ class KeyboardLayout(private val theme: KeyboardTheme) {
         ).coerceAtLeast(kw10 * 2f)
 
         var idx = 28
-        x = mh
+        x = startX + mh
         symbolShiftKeys[idx++].bounds.set(x, y, x + sideKeyW, y + rowHeight - mv * 2)
         x += sideKeyW + mh * 2
         if (showEmojiKey) {
@@ -490,10 +530,17 @@ class KeyboardLayout(private val theme: KeyboardTheme) {
         symbolShiftKeys[idx].bounds.set(x, y, x + enterW, y + rowHeight - mv * 2)
     }
 
-    private fun measureNumpad(width: Int, topOffset: Float, rowHeight: Float, mh: Float, mv: Float) {
+    private fun measureNumpad(
+        startX: Float,
+        width: Int,
+        topOffset: Float,
+        rowHeight: Float,
+        mh: Float,
+        mv: Float
+    ) {
         val kw4 = (width - mh * 8) / 4f
         for (row in 0 until 4) {
-            var x = mh
+            var x = startX + mh
             val y = topOffset + row * rowHeight + mv
             for (col in 0 until 4) {
                 val idx = row * 4 + col
@@ -507,13 +554,16 @@ class KeyboardLayout(private val theme: KeyboardTheme) {
 
     /**
      * Zero-dead-zone hit resolution (100% zero-allocation).
-     * Checks exact visual bounds first, then resolves gaps/margins to the nearest keycap edge.
+     * Checks exact visual bounds first, then resolves gaps/margins to the nearest keycap edge
+     * within the active keyboard horizontal region (respecting One-Handed Mode gutter).
      */
     fun findKeyAt(x: Float, y: Float): KeyModel? {
         val keys = getActiveKeys()
         if (keys.isEmpty()) return null
         if (y < lastTopOffset) return null
-        if (lastWidth > 0 && (x < 0f || x > lastWidth.toFloat() || y > lastTopOffset + lastKeyAreaHeight)) {
+        val leftEdge = horizontalOffsetX
+        val rightEdge = horizontalOffsetX + contentWidth.toFloat()
+        if (contentWidth > 0 && (x < leftEdge || x > rightEdge || y > lastTopOffset + lastKeyAreaHeight)) {
             return null
         }
 

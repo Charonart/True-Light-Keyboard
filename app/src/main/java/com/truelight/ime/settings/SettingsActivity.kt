@@ -185,6 +185,8 @@ class SettingsActivity : AppCompatActivity() {
     private lateinit var switchDoubleSpace: MaterialSwitch
     private lateinit var switchSmartPunct: MaterialSwitch
     private lateinit var switchClipboard: MaterialSwitch
+    private lateinit var clipAutoClearContainer: LinearLayout
+    private lateinit var clipAutoClearSegments: Array<TextView>
     private lateinit var enterLongPressSegments: Array<TextView>
     private lateinit var longPressDelayChip: TextView
     private lateinit var longPressDelaySlider: Slider
@@ -200,6 +202,7 @@ class SettingsActivity : AppCompatActivity() {
     private lateinit var switchCustomCss: MaterialSwitch
     private lateinit var cssStatusChip: TextView
     private lateinit var emojiModeSegments: Array<TextView>
+    private lateinit var oneHandedSegments: Array<TextView>
     private lateinit var switchKeyPopup: MaterialSwitch
     private lateinit var switchKeypressAnim: MaterialSwitch
     private lateinit var switchTopUtilityBar: MaterialSwitch
@@ -217,6 +220,9 @@ class SettingsActivity : AppCompatActivity() {
     private lateinit var hapticStrengthContainer: LinearLayout
     private lateinit var hapticStrengthSegments: Array<TextView>
     private lateinit var switchSound: MaterialSwitch
+
+    // About Tab views
+    private lateinit var switchAggressiveStandbyTrim: MaterialSwitch
 
     // Resolved Material 3 dynamic color tokens
     private var isNightMode = false
@@ -1146,12 +1152,50 @@ class SettingsActivity : AppCompatActivity() {
             title = "Clipboard history",
             subtitle = "Last 10 text & image clips (RAM only)",
             checked = remotePrefs.clipboardEnabled
-        ) {
-            remotePrefs.clipboardEnabled = it
+        ) { isChecked ->
+            remotePrefs.clipboardEnabled = isChecked
+            clipAutoClearContainer.visibility = if (isChecked) View.VISIBLE else View.GONE
             refreshRamMonitor()
         }
         switchClipboard = clipRow.second
         body.addView(clipRow.first)
+
+        // Sleek indented sub-panel for Auto-clear unpinned clips (visible only when Clipboard history is ON)
+        clipAutoClearContainer = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            background = pillBg(colSurfaceContainer, 14)
+            setPadding(dp(12), dp(10), dp(12), dp(10))
+            visibility = if (remotePrefs.clipboardEnabled) View.VISIBLE else View.GONE
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply {
+                topMargin = dp(10)
+            }
+        }
+        clipAutoClearContainer.addView(TextView(this).apply {
+            text = "Auto-clear unpinned clips"
+            textSize = 13f
+            typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+            setTextColor(colOnSurfaceVariant)
+            setPadding(dp(2), 0, 0, dp(7))
+        })
+        val clipClearMinutes = intArrayOf(
+            KeyboardPrefs.CLIP_AUTO_CLEAR_OFF,
+            KeyboardPrefs.CLIP_AUTO_CLEAR_15M,
+            KeyboardPrefs.CLIP_AUTO_CLEAR_30M,
+            KeyboardPrefs.CLIP_AUTO_CLEAR_60M
+        )
+        val (clipClearSegView, clipClearSegs) = createSegmentedControl(
+            arrayOf("Off", "15m", "30m", "60m")
+        ) { idx ->
+            val mins = clipClearMinutes[idx]
+            remotePrefs.clipboardAutoClearMinutes = mins
+            updateClipAutoClearSegments(mins)
+        }
+        clipAutoClearSegments = clipClearSegs
+        clipAutoClearContainer.addView(clipClearSegView)
+        body.addView(clipAutoClearContainer)
 
         return card
     }
@@ -1436,6 +1480,32 @@ class SettingsActivity : AppCompatActivity() {
         }
         emojiModeSegments = emojiSegs
         body.addView(emojiSegView)
+
+        body.addView(createDivider())
+
+        // One-Handed Mode 3-pill segmented selector (Off / Left / Right)
+        body.addView(TextView(this).apply {
+            text = "One-handed mode"
+            textSize = 15f
+            typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+            setTextColor(colOnSurface)
+            setPadding(0, 0, 0, dp(8))
+        })
+
+        val oneHandedModes = intArrayOf(
+            KeyboardPrefs.ONE_HANDED_OFF,
+            KeyboardPrefs.ONE_HANDED_LEFT,
+            KeyboardPrefs.ONE_HANDED_RIGHT
+        )
+        val (ohSegView, ohSegs) = createSegmentedControl(
+            arrayOf("Off", "Left", "Right")
+        ) { idx ->
+            val mode = oneHandedModes[idx]
+            remotePrefs.oneHandedMode = mode
+            updateSegmentedControl(oneHandedSegments, idx, enabled = true)
+        }
+        oneHandedSegments = ohSegs
+        body.addView(ohSegView)
 
         body.addView(createDivider())
 
@@ -1779,8 +1849,21 @@ class SettingsActivity : AppCompatActivity() {
         })
         col.addView(privacyCard)
 
-        // Local Data Management Card
-        val (dataCard, dataBody) = createCard(title = "Local Data")
+        // Performance & Local Data Management Card
+        val (dataCard, dataBody) = createCard(title = "Performance & Local Data")
+
+        val trimRow = createSwitchRow(
+            title = "Aggressive standby trim",
+            subtitle = "Free emoji & search caches shortly after hiding keyboard",
+            checked = remotePrefs.aggressiveStandbyTrimEnabled
+        ) { isChecked ->
+            remotePrefs.aggressiveStandbyTrimEnabled = isChecked
+            refreshRamMonitor()
+        }
+        switchAggressiveStandbyTrim = trimRow.second
+        dataBody.addView(trimRow.first)
+
+        dataBody.addView(createDivider())
 
         dataBody.addView(createOutlinedButton("Clear history & learned words") {
             MaterialAlertDialogBuilder(this)
@@ -1913,6 +1996,8 @@ class SettingsActivity : AppCompatActivity() {
             updateCssStatusChip()
             updateEnterLongPressSegments(remotePrefs.longPressEnterAction)
             updateEmojiModeSegments(remotePrefs.emojiButtonMode)
+            updateOneHandedSegments(remotePrefs.oneHandedMode)
+            updateClipAutoClearSegments(remotePrefs.clipboardAutoClearMinutes)
             updateHapticStrengthSegments(remotePrefs.hapticStrength, remotePrefs.hapticEnabled)
 
             val snappedH = snapHeightToStep(remotePrefs.keyboardHeightDp)
@@ -1941,6 +2026,7 @@ class SettingsActivity : AppCompatActivity() {
             switchDoubleSpace.isChecked = remotePrefs.doubleSpacePeriodEnabled
             switchSmartPunct.isChecked = remotePrefs.smartPunctuationEnabled
             switchClipboard.isChecked = remotePrefs.clipboardEnabled
+            clipAutoClearContainer.visibility = if (remotePrefs.clipboardEnabled) View.VISIBLE else View.GONE
 
             switchLongPress.isChecked = remotePrefs.longPressSymbols
             switchSpaceGlide.isChecked = remotePrefs.spaceCursorGlideEnabled
@@ -1961,6 +2047,7 @@ class SettingsActivity : AppCompatActivity() {
 
             switchHaptic.isChecked = remotePrefs.hapticEnabled
             switchSound.isChecked = remotePrefs.soundEnabled
+            switchAggressiveStandbyTrim.isChecked = remotePrefs.aggressiveStandbyTrimEnabled
         } finally {
             isSyncingUi = false
         }
@@ -1985,6 +2072,27 @@ class SettingsActivity : AppCompatActivity() {
         )
         val idx = modes.indexOf(mode).let { if (it >= 0) it else 0 }
         updateSegmentedControl(emojiModeSegments, idx, enabled = true)
+    }
+
+    private fun updateOneHandedSegments(mode: Int) {
+        val modes = intArrayOf(
+            KeyboardPrefs.ONE_HANDED_OFF,
+            KeyboardPrefs.ONE_HANDED_LEFT,
+            KeyboardPrefs.ONE_HANDED_RIGHT
+        )
+        val idx = modes.indexOf(mode).let { if (it >= 0) it else 0 }
+        updateSegmentedControl(oneHandedSegments, idx, enabled = true)
+    }
+
+    private fun updateClipAutoClearSegments(minutes: Int) {
+        val options = intArrayOf(
+            KeyboardPrefs.CLIP_AUTO_CLEAR_OFF,
+            KeyboardPrefs.CLIP_AUTO_CLEAR_15M,
+            KeyboardPrefs.CLIP_AUTO_CLEAR_30M,
+            KeyboardPrefs.CLIP_AUTO_CLEAR_60M
+        )
+        val idx = options.indexOf(minutes).let { if (it >= 0) it else 0 }
+        updateSegmentedControl(clipAutoClearSegments, idx, enabled = true)
     }
 
     private fun updateHapticStrengthSegments(strength: Int, hapticOn: Boolean) {

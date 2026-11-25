@@ -289,6 +289,41 @@ class RemotePrefsClient(context: Context) {
             value.coerceIn(KeyboardPrefs.HAPTIC_LIGHT, KeyboardPrefs.HAPTIC_STRONG)
         )
 
+    var oneHandedMode: Int
+        get() = (getSnapshot()?.getInt(
+            KeyboardPrefs.KEY_ONE_HANDED_MODE,
+            KeyboardPrefs.ONE_HANDED_OFF
+        ) ?: KeyboardPrefs.ONE_HANDED_OFF)
+            .coerceIn(KeyboardPrefs.ONE_HANDED_OFF, KeyboardPrefs.ONE_HANDED_RIGHT)
+        set(value) = putInt(
+            KeyboardPrefs.KEY_ONE_HANDED_MODE,
+            value.coerceIn(KeyboardPrefs.ONE_HANDED_OFF, KeyboardPrefs.ONE_HANDED_RIGHT)
+        )
+
+    var clipboardAutoClearMinutes: Int
+        get() {
+            val raw = getSnapshot()?.getInt(
+                KeyboardPrefs.KEY_CLIPBOARD_AUTO_CLEAR_MIN,
+                KeyboardPrefs.CLIP_AUTO_CLEAR_OFF
+            ) ?: KeyboardPrefs.CLIP_AUTO_CLEAR_OFF
+            return sanitizeClipboardAutoClearMinutes(raw)
+        }
+        set(value) = putInt(
+            KeyboardPrefs.KEY_CLIPBOARD_AUTO_CLEAR_MIN,
+            sanitizeClipboardAutoClearMinutes(value)
+        )
+
+    var aggressiveStandbyTrimEnabled: Boolean
+        get() = getSnapshot()?.getBoolean(KeyboardPrefs.KEY_AGGRESSIVE_STANDBY_TRIM, true) ?: true
+        set(value) = putBool(KeyboardPrefs.KEY_AGGRESSIVE_STANDBY_TRIM, value)
+
+    private fun sanitizeClipboardAutoClearMinutes(minutes: Int): Int = when (minutes) {
+        KeyboardPrefs.CLIP_AUTO_CLEAR_15M,
+        KeyboardPrefs.CLIP_AUTO_CLEAR_30M,
+        KeyboardPrefs.CLIP_AUTO_CLEAR_60M -> minutes
+        else -> KeyboardPrefs.CLIP_AUTO_CLEAR_OFF
+    }
+
     fun addLanguage(langId: String) {
         invalidateCache()
         callProvider(PrefsProvider.METHOD_ADD_LANGUAGE, langId, null)

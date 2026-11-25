@@ -8,6 +8,7 @@ import android.graphics.Paint
 import android.graphics.Path
 import android.graphics.Rect
 import android.graphics.RectF
+import android.graphics.Typeface
 import android.media.AudioManager
 import android.net.Uri
 import android.os.Build
@@ -26,9 +27,12 @@ import com.truelight.ime.clipboard.ClipboardHistoryManager
 import com.truelight.ime.config.KeyboardConfig
 import com.truelight.ime.config.KeyboardPrefs
 import com.truelight.ime.emoji.EmojiCanvasPanel
+import com.truelight.ime.emoji.EmojiData
 import com.truelight.ime.emoji.EmojiHistoryManager
+import com.truelight.ime.emoji.EmojiSearchIndex
 import com.truelight.ime.suggest.SuggestionManager
 import com.truelight.ime.ui.theme.KeyboardTheme
+import java.io.File
 import kotlin.math.PI
 import kotlin.math.abs
 import kotlin.math.cos
@@ -52,10 +56,12 @@ class KeyboardCanvasView(context: Context) : View(context) {
         fun onBackspace()
         fun onDeleteWord()
         fun onMoveCursor(delta: Int)
+        fun onSelectCursor(delta: Int)
         fun onEnter()
         fun onInsertNewline()
         fun onEmoji(emoji: String)
         fun onLanguageToggle()
+        fun onOneHandedModeChanged(mode: Int)
         fun onOpenSettings()
         fun onSuggestionSelected(word: String)
         fun onClipSelected(text: String)
@@ -70,6 +76,7 @@ class KeyboardCanvasView(context: Context) : View(context) {
         private const val STRIP_ACTION_LANG_PILL = 3
         private const val STRIP_ACTION_LANG_CENTER = 4
         private const val STRIP_ACTION_SETTINGS = 5
+        private const val STRIP_ACTION_ONE_HANDED = 6
 
         private const val CLIP_TITLE = "Clipboard"
         private const val CLIP_BACK = "Back"
@@ -81,10 +88,13 @@ class KeyboardCanvasView(context: Context) : View(context) {
         private const val CLIP_IMAGE_JPEG = "JPEG image · Tap to insert"
         private const val CLIP_IMAGE_WEBP = "WebP image · Tap to insert"
         private const val CLIP_IMAGE_GIF = "GIF image · Tap to insert"
+        private const val SEARCH_PLACEHOLDER = "Search…"
+        private const val SEARCH_NO_MATCH = "No match"
         private const val ELLIPSIS = "…"
 
         private const val MAX_CLIP_THUMBNAILS = 5
         private const val CLIP_THUMB_TARGET_PX = 120
+        private const val MAX_EMOJI_SEARCH_LEN = 28
 
         private const val ANIM_BUFFER_SIZE = 8
         private const val ANIM_DURATION_MS = 95L
@@ -116,6 +126,9 @@ class KeyboardCanvasView(context: Context) : View(context) {
     var isEmojiMode = false
         private set
 
+    var isEmojiSearchMode = false
+        private set
+
     private var isClipboardOpen = false
     private var clipScrollY = 0f
     private var clipMaxScrollY = 0f
@@ -123,9 +136,12 @@ class KeyboardCanvasView(context: Context) : View(context) {
     private var clipLastTouchY = 0f
     private var clipDragging = false
     private var clipPressedIndex = -1
+    private var clipPressedAction = 0 // 0 = card body, 1 = Pin, 2 = Delete
+    private var clipLongPressTriggered = false
     private var clipHeaderBtnPressed = 0 // 1 = Back, 2 = Clear
 
     var keyboardHeightDp: Int = KeyboardPrefs.DEFAULT_HEIGHT_DP
+    var oneHandedMode: Int = KeyboardPrefs.ONE_HANDED_OFF
     var hapticEnabled: Boolean = true
     var hapticStrength: Int = KeyboardPrefs.HAPTIC_MEDIUM
     var soundEnabled: Boolean = false
@@ -179,12 +195,63 @@ class KeyboardCanvasView(context: Context) : View(context) {
     }
 
     private val stripHeightPx: Float = 38f * density
-    private val stripSideBtnWidthPx: Float = 44f * density
-    private val stripLangBtnWidthPx: Float = 48f * density
+    private val stripSideBtnWidthPx: Float = 42f * density
+    private val stripLangBtnWidthPx: Float = 44f * density
     private var currentStripHeight: Float = 0f
     private var pressedSuggestionIndex: Int = -1
     private var pressedStripAction: Int = STRIP_ACTION_NONE
     private var stripPointerId: Int = -1
+
+    // One-Handed Mode gutter geometry & touch state (preallocated -> 0 allocs in onDraw)
+    private val oneHandedGutterRect = RectF()
+    private val oneHandedExpandBtnRect = RectF()
+    private val oneHandedFlipBtnRect = RectF()
+    private var oneHandedGutterPointerId: Int = -1
+    private var pressedGutterBtn: Int = 0 // 1 = Expand, 2 = Flip
+
+    // Inline Emoji Search state & preallocated Paints (0 allocs in onDraw)
+    private val emojiSearchQuery = StringBuilder(32)
+    private val emojiSearchResults = ArrayList<String>(28)
+    private var emojiSearchResultsScrollX = 0f
+    private var emojiSearchResultsMaxScrollX = 0f
+    private var emojiSearchTouchStartX = 0f
+    private var emojiSearchLastTouchX = 0f
+    private var emojiSearchDragging = false
+    private var emojiSearchPressedResultIdx = -1
+    private var emojiSearchClosePressed = false
+    private val emojiSearchInputPillRect = RectF()
+    private val emojiSearchCloseBtnRect = RectF()
+    private val emojiSearchResultsRect = RectF()
+
+    private val searchEmojiPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        textAlign = Paint.Align.CENTER
+        textSize = 22f * density
+        val fontFile = File("/system/fonts/NotoColorEmoji.ttf")
+        if (fontFile.exists() && fontFile.canRead()) {
+            try {
+                typeface = Typeface.createFromFile(fontFile)
+            } catch (_: Exception) {
+                typeface = Typeface.DEFAULT
+            }
+        }
+    }
+    private val searchQueryPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        textAlign = Paint.Align.LEFT
+        textSize = 13.5f * density
+    }
+    private val accentStrokePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.STROKE
+        strokeWidth = 1.9f * density
+        strokeCap = Paint.Cap.ROUND
+        strokeJoin = Paint.Join.ROUND
+    }
+    private val accentTintPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.FILL
+    }
+    private val accentBorderPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.STROKE
+        strokeWidth = maxOf(1f, 1.15f * density)
+    }
 
     // Lazy micro-thumbnail cache for clipboard image clips (max 5 entries, RGB_565 ~28 KB/img)
     // Recycled immediately whenever clipboard closes or keyboard hides
@@ -238,6 +305,7 @@ class KeyboardCanvasView(context: Context) : View(context) {
     private var deleteSwipeTriggered: Boolean = false
     private var spaceSlot: Int = -1
     private var spaceGlideActive: Boolean = false
+    private var spaceGlideSelectionMode: Boolean = false
     private var spaceLastStepX: Float = 0f
 
     // Shift tap / double-tap / chording state
@@ -246,6 +314,21 @@ class KeyboardCanvasView(context: Context) : View(context) {
     private var shiftWasActiveBeforeHold: Boolean = false
     private var shiftUsedAsChord: Boolean = false
 
+    private val clipLongPressRunnable = Runnable {
+        if (isClipboardOpen && !clipDragging && clipPressedIndex >= 0 && clipPressedAction == 0) {
+            clipLongPressTriggered = true
+            val idx = clipPressedIndex
+            clipPressedIndex = -1
+            val cm = clipboardManager
+            val clips = cm?.getClipItems()
+            if (cm != null && clips != null && idx in clips.indices) {
+                cm.togglePin(idx)
+                triggerHaptic()
+                invalidate()
+            }
+        }
+    }
+
     private val backspaceRepeatRunnable = object : Runnable {
         override fun run() {
             val slot = deleteSlot
@@ -253,7 +336,11 @@ class KeyboardCanvasView(context: Context) : View(context) {
                 !deleteSwipeTriggered &&
                 pointerKeys[slot]?.type == KeyModel.TYPE_DELETE
             ) {
-                actionListener?.onBackspace()
+                if (isEmojiSearchMode) {
+                    handleEmojiSearchBackspace()
+                } else {
+                    actionListener?.onBackspace()
+                }
                 triggerHaptic()
                 playKeySound(KeyModel.TYPE_DELETE)
                 mainHandler.postDelayed(this, 50L)
@@ -343,10 +430,21 @@ class KeyboardCanvasView(context: Context) : View(context) {
     init {
         isClickable = true
         isFocusable = true
+        syncAuxPaints()
+    }
+
+    private fun syncAuxPaints() {
+        searchQueryPaint.color = theme.colorTextPrimary
+        accentStrokePaint.color = theme.colorAccent
+        accentTintPaint.color = theme.colorAccent
+        accentTintPaint.alpha = 48
+        accentBorderPaint.color = theme.colorAccent
+        accentBorderPaint.alpha = 128
     }
 
     override fun onDetachedFromWindow() {
         super.onDetachedFromWindow()
+        mainHandler.removeCallbacks(clipLongPressRunnable)
         resetAllTouches()
         clearKeyAnimations()
         clearClipboardThumbnails()
@@ -376,8 +474,11 @@ class KeyboardCanvasView(context: Context) : View(context) {
                 playKeySound(KeyModel.TYPE_DELETE)
                 actionListener?.onBackspace()
             },
-            onRequestInvalidate = { postInvalidateOnAnimation() }
+            onSearchClicked = { enterEmojiSearchMode() },
+            onRequestInvalidate = { postInvalidateOnAnimation() },
+            onTriggerHaptic = { triggerHaptic() }
         )
+        panel.longPressDelayMs = longPressDelayMs
         if (width > 0 && height > 0) {
             panel.measure(width, height)
         }
@@ -387,8 +488,10 @@ class KeyboardCanvasView(context: Context) : View(context) {
 
     fun applyConfig(context: Context, config: KeyboardConfig) {
         theme.applyTheme(context, config.themeMode, config.customCssEnabled, config.customCss)
+        syncAuxPaints()
         emojiPanel?.syncThemeColors()
         keyboardHeightDp = config.heightDp
+        oneHandedMode = config.oneHandedMode
         hapticEnabled = config.hapticEnabled
         hapticStrength = config.hapticStrength
         soundEnabled = config.soundEnabled
@@ -402,6 +505,7 @@ class KeyboardCanvasView(context: Context) : View(context) {
         longPressDelayMs = config.longPressDelayMs
             .coerceIn(KeyboardPrefs.MIN_LONG_PRESS_MS, KeyboardPrefs.MAX_LONG_PRESS_MS)
             .toLong()
+        emojiPanel?.longPressDelayMs = longPressDelayMs
         spaceCursorGlideEnabled = config.spaceCursorGlide
         spaceLongPressLangEnabled = config.spaceLongPressLang
         swipeDeleteWordEnabled = config.swipeDeleteWord
@@ -436,6 +540,23 @@ class KeyboardCanvasView(context: Context) : View(context) {
             emojiPanel?.detach()
             emojiPanel = null
         }
+        if (!isEmojiSearchMode) {
+            EmojiSearchIndex.release()
+        }
+    }
+
+    /**
+     * Aggressive standby memory trim: releases Emoji panel, recent history cache,
+     * EmojiSearchIndex, clipboard thumbnails, and resets emoji search cleanly.
+     */
+    fun releaseStandbyMemory() {
+        exitEmojiSearchMode(notifyInvalidate = false)
+        clearClipboardThumbnails()
+        clearKeyAnimations()
+        emojiPanel?.detach()
+        emojiPanel = null
+        historyManager = null
+        EmojiSearchIndex.release()
     }
 
     fun clearClipboardThumbnails() {
@@ -559,6 +680,7 @@ class KeyboardCanvasView(context: Context) : View(context) {
         customCss: String
     ) {
         theme.applyTheme(context, themeMode, customCssEnabled, customCss)
+        syncAuxPaints()
         emojiPanel?.syncThemeColors()
         if (width > 0 && height > 0) {
             remeasureInternal(width, height)
@@ -584,6 +706,7 @@ class KeyboardCanvasView(context: Context) : View(context) {
     }
 
     private fun hasStripSpace(): Boolean {
+        if (isEmojiSearchMode) return true
         if (layout.currentMode == KeyboardLayout.Mode.NUMPAD) return false
         return (suggestionManager?.isStripVisible() == true) || showTopUtilityBar
     }
@@ -624,7 +747,59 @@ class KeyboardCanvasView(context: Context) : View(context) {
     private fun remeasureInternal(w: Int, h: Int) {
         currentStripHeight = if (shouldShowSuggestionStrip()) stripHeightPx else 0f
         val keyAreaH = (h - currentStripHeight).coerceAtLeast(1f)
-        layout.measure(w, currentStripHeight, keyAreaH)
+
+        val wf = w.toFloat()
+        val hf = h.toFloat()
+        when (oneHandedMode) {
+            KeyboardPrefs.ONE_HANDED_LEFT -> {
+                val activeW = (wf * 0.82f).toInt().coerceAtLeast(1)
+                layout.measure(w, currentStripHeight, keyAreaH, startX = 0f, activeWidth = activeW)
+                oneHandedGutterRect.set(activeW.toFloat(), currentStripHeight, wf, hf)
+            }
+            KeyboardPrefs.ONE_HANDED_RIGHT -> {
+                val activeW = (wf * 0.82f).toInt().coerceAtLeast(1)
+                val startX = (w - activeW).toFloat()
+                layout.measure(w, currentStripHeight, keyAreaH, startX = startX, activeWidth = activeW)
+                oneHandedGutterRect.set(0f, currentStripHeight, startX, hf)
+            }
+            else -> {
+                layout.measure(w, currentStripHeight, keyAreaH, startX = 0f, activeWidth = w)
+                oneHandedGutterRect.setEmpty()
+            }
+        }
+
+        // Precompute One-Handed gutter circular/squircle button bounds (0 allocs in onDraw)
+        if (!oneHandedGutterRect.isEmpty) {
+            val gw = oneHandedGutterRect.width()
+            val gcx = oneHandedGutterRect.centerX()
+            val gcy = oneHandedGutterRect.centerY()
+            val btnSize = minOf(gw * 0.72f, 44f * density).coerceAtLeast(28f * density)
+            val gap = 16f * density
+            val halfBtn = btnSize * 0.5f
+            val expandCy = gcy - halfBtn - gap * 0.5f
+            val flipCy = gcy + halfBtn + gap * 0.5f
+            oneHandedExpandBtnRect.set(gcx - halfBtn, expandCy - halfBtn, gcx + halfBtn, expandCy + halfBtn)
+            oneHandedFlipBtnRect.set(gcx - halfBtn, flipCy - halfBtn, gcx + halfBtn, flipCy + halfBtn)
+        } else {
+            oneHandedExpandBtnRect.setEmpty()
+            oneHandedFlipBtnRect.setEmpty()
+        }
+
+        // Precompute Inline Emoji Search strip geometry (0 allocs in onDraw)
+        val sh = stripHeightPx
+        val padH = 6f * density
+        val padV = 4.5f * density
+        val pillW = (wf * 0.37f).coerceIn(118f * density, 164f * density).coerceAtMost(wf * 0.55f)
+        emojiSearchInputPillRect.set(padH, padV, padH + pillW, sh - padV)
+        val closeW = 26f * density
+        emojiSearchCloseBtnRect.set(
+            emojiSearchInputPillRect.right - closeW,
+            0f,
+            emojiSearchInputPillRect.right + 2f * density,
+            sh
+        )
+        emojiSearchResultsRect.set(emojiSearchInputPillRect.right + 4f * density, 0f, wf - 4f * density, sh - density)
+
         emojiPanel?.measure(w, h)
     }
 
@@ -762,6 +937,11 @@ class KeyboardCanvasView(context: Context) : View(context) {
             }
         }
 
+        // 3b. Draw One-Handed Mode Side Gutter controls (Expand & Flip) when active
+        if (oneHandedMode != KeyboardPrefs.ONE_HANDED_OFF && !oneHandedGutterRect.isEmpty) {
+            drawOneHandedGutter(canvas, hasShadow, hasBorder)
+        }
+
         // 4. Draw Enter Popup, Accent Popup, OR Key Preview Popup (100% zero-allocation)
         if (isEnterPopupActive) {
             drawEnterPopup(canvas, hasShadow, hasBorder)
@@ -829,10 +1009,11 @@ class KeyboardCanvasView(context: Context) : View(context) {
                     val chev = 4f * density
                     val leftX = b.left + 14f * density
                     val rightX = b.right - 14f * density
-                    canvas.drawLine(leftX + chev, cy - chev, leftX, cy, theme.iconSecondaryPaint)
-                    canvas.drawLine(leftX, cy, leftX + chev, cy + chev, theme.iconSecondaryPaint)
-                    canvas.drawLine(rightX - chev, cy - chev, rightX, cy, theme.iconSecondaryPaint)
-                    canvas.drawLine(rightX, cy, rightX - chev, cy + chev, theme.iconSecondaryPaint)
+                    val chevPaint = if (spaceGlideSelectionMode) accentStrokePaint else theme.iconSecondaryPaint
+                    canvas.drawLine(leftX + chev, cy - chev, leftX, cy, chevPaint)
+                    canvas.drawLine(leftX, cy, leftX + chev, cy + chev, chevPaint)
+                    canvas.drawLine(rightX - chev, cy - chev, rightX, cy, chevPaint)
+                    canvas.drawLine(rightX, cy, rightX - chev, cy + chev, chevPaint)
                 }
             }
             KeyModel.TYPE_SWITCH_SYMBOLS,
@@ -1157,6 +1338,168 @@ class KeyboardCanvasView(context: Context) : View(context) {
         canvas.drawLine(cx - r * 0.34f, cy + r * 0.42f, cx + r * 0.18f, cy + r * 0.42f, paint)
     }
 
+    private fun drawOneHandedIcon(canvas: Canvas, cx: Float, cy: Float, r: Float, active: Boolean) {
+        val strokePaint = if (active) accentStrokePaint else theme.iconSecondaryPaint
+        val hw = r * 0.72f
+        val hh = r * 0.96f
+        // Sleek phone frame outline
+        theme.reusableRectF.set(cx - hw, cy - hh, cx + hw, cy + hh)
+        canvas.drawRoundRect(theme.reusableRectF, 2.4f * density, 2.4f * density, strokePaint)
+
+        // Docked miniature keyboard block inside bottom corner (left when ONE_HANDED_LEFT, right otherwise)
+        val kbW = hw * 1.18f
+        val kbH = hh * 0.68f
+        val kbBottom = cy + hh - 2.0f * density
+        val kbTop = kbBottom - kbH
+        val kbLeft = if (oneHandedMode == KeyboardPrefs.ONE_HANDED_LEFT) {
+            cx - hw + 2.0f * density
+        } else {
+            cx + hw - 2.0f * density - kbW
+        }
+        theme.reusableRectF.set(kbLeft, kbTop, kbLeft + kbW, kbBottom)
+        if (active) {
+            canvas.drawRoundRect(theme.reusableRectF, 1.4f * density, 1.4f * density, accentTintPaint)
+        }
+        canvas.drawRoundRect(theme.reusableRectF, 1.4f * density, 1.4f * density, strokePaint)
+
+        // Tiny directional arrow above docked keyboard
+        val arrowY = cy - hh * 0.34f
+        val arrowW = hw * 0.42f
+        val dir = if (oneHandedMode == KeyboardPrefs.ONE_HANDED_LEFT) -1f else 1f
+        canvas.drawLine(cx - arrowW * dir, arrowY, cx + arrowW * dir, arrowY, strokePaint)
+        canvas.drawLine(cx + arrowW * dir, arrowY, cx + (arrowW * 0.25f) * dir, arrowY - arrowW * 0.55f, strokePaint)
+        canvas.drawLine(cx + arrowW * dir, arrowY, cx + (arrowW * 0.25f) * dir, arrowY + arrowW * 0.55f, strokePaint)
+    }
+
+    private fun drawSearchGlassIcon(canvas: Canvas, cx: Float, cy: Float, r: Float, paint: Paint) {
+        val gx = cx - r * 0.22f
+        val gy = cy - r * 0.22f
+        val glassR = r * 0.74f
+        canvas.drawCircle(gx, gy, glassR, paint)
+        canvas.drawLine(
+            gx + glassR * 0.72f,
+            gy + glassR * 0.72f,
+            cx + r * 0.92f,
+            cy + r * 0.92f,
+            paint
+        )
+    }
+
+    private fun drawCloseXIcon(canvas: Canvas, cx: Float, cy: Float, arm: Float, paint: Paint) {
+        canvas.drawLine(cx - arm, cy - arm, cx + arm, cy + arm, paint)
+        canvas.drawLine(cx + arm, cy - arm, cx - arm, cy + arm, paint)
+    }
+
+    private fun drawPushpinIcon(canvas: Canvas, cx: Float, cy: Float, r: Float, pinned: Boolean) {
+        val strokePaint = if (pinned) accentStrokePaint else theme.iconSecondaryPaint
+        val path = theme.reusablePath
+        // Diagonal 45-degree modern vector pushpin (head top-right, needle bottom-left)
+        path.reset()
+        path.moveTo(cx + r * 0.08f, cy - r * 0.88f)
+        path.lineTo(cx + r * 0.88f, cy - r * 0.08f)
+        path.lineTo(cx + r * 0.50f, cy + r * 0.16f)
+        path.lineTo(cx + r * 0.24f, cy + r * 0.54f)
+        path.lineTo(cx - r * 0.54f, cy - r * 0.24f)
+        path.lineTo(cx - r * 0.16f, cy - r * 0.50f)
+        path.close()
+
+        if (pinned) {
+            canvas.drawPath(path, theme.accentPaint)
+        }
+        canvas.drawPath(path, strokePaint)
+        // Needle pointing bottom-left
+        canvas.drawLine(cx - r * 0.18f, cy + r * 0.18f, cx - r * 0.82f, cy + r * 0.82f, strokePaint)
+    }
+
+    private fun drawExpandArrowsIcon(canvas: Canvas, cx: Float, cy: Float, s: Float, paint: Paint) {
+        // Opposite diagonal expand arrows (top-right & bottom-left)
+        canvas.drawLine(cx - s * 0.78f, cy + s * 0.78f, cx + s * 0.78f, cy - s * 0.78f, paint)
+        val head = s * 0.52f
+        // Top-right arrowhead
+        canvas.drawLine(cx + s * 0.78f, cy - s * 0.78f, cx + s * 0.78f - head, cy - s * 0.78f, paint)
+        canvas.drawLine(cx + s * 0.78f, cy - s * 0.78f, cx + s * 0.78f, cy - s * 0.78f + head, paint)
+        // Bottom-left arrowhead
+        canvas.drawLine(cx - s * 0.78f, cy + s * 0.78f, cx - s * 0.78f + head, cy + s * 0.78f, paint)
+        canvas.drawLine(cx - s * 0.78f, cy + s * 0.78f, cx - s * 0.78f, cy + s * 0.78f - head, paint)
+    }
+
+    private fun drawFlipArrowIcon(canvas: Canvas, cx: Float, cy: Float, s: Float, pointRight: Boolean, paint: Paint) {
+        val dir = if (pointRight) 1f else -1f
+        // Horizontal arrow pointing toward gutter side to pull keyboard across
+        canvas.drawLine(cx - s * 0.76f * dir, cy, cx + s * 0.76f * dir, cy, paint)
+        canvas.drawLine(cx + s * 0.76f * dir, cy, cx + s * 0.20f * dir, cy - s * 0.56f, paint)
+        canvas.drawLine(cx + s * 0.76f * dir, cy, cx + s * 0.20f * dir, cy + s * 0.56f, paint)
+        // Subtle vertical docking bar at destination edge
+        canvas.drawLine(cx + s * 0.96f * dir, cy - s * 0.58f, cx + s * 0.96f * dir, cy + s * 0.58f, paint)
+    }
+
+    private fun drawOneHandedGutter(canvas: Canvas, hasShadow: Boolean, hasBorder: Boolean) {
+        // Subtle vertical hairline separating active keyboard area from gutter
+        val divX = if (oneHandedMode == KeyboardPrefs.ONE_HANDED_LEFT) {
+            oneHandedGutterRect.left
+        } else {
+            oneHandedGutterRect.right - density
+        }
+        canvas.drawRect(
+            divX,
+            oneHandedGutterRect.top + 8f * density,
+            divX + density,
+            oneHandedGutterRect.bottom - 8f * density,
+            theme.stripDividerPaint
+        )
+
+        val btnR = oneHandedExpandBtnRect.height() * 0.5f
+
+        // 1. Expand-to-full-width button (top)
+        if (pressedGutterBtn != 1 && hasShadow) {
+            theme.reusableRectF.set(
+                oneHandedExpandBtnRect.left,
+                oneHandedExpandBtnRect.top + theme.keyShadowHeight,
+                oneHandedExpandBtnRect.right,
+                oneHandedExpandBtnRect.bottom + theme.keyShadowHeight
+            )
+            canvas.drawRoundRect(theme.reusableRectF, btnR, btnR, theme.keyShadowPaint)
+        }
+        val expandBg = if (pressedGutterBtn == 1) theme.keyPressedPaint else theme.keySpecialPaint
+        canvas.drawRoundRect(oneHandedExpandBtnRect, btnR, btnR, expandBg)
+        if (hasBorder) {
+            canvas.drawRoundRect(oneHandedExpandBtnRect, btnR, btnR, theme.keyBorderPaint)
+        }
+        drawExpandArrowsIcon(
+            canvas,
+            oneHandedExpandBtnRect.centerX(),
+            oneHandedExpandBtnRect.centerY(),
+            oneHandedExpandBtnRect.width() * 0.24f,
+            theme.iconPaint
+        )
+
+        // 2. Flip-side button (bottom)
+        if (pressedGutterBtn != 2 && hasShadow) {
+            theme.reusableRectF.set(
+                oneHandedFlipBtnRect.left,
+                oneHandedFlipBtnRect.top + theme.keyShadowHeight,
+                oneHandedFlipBtnRect.right,
+                oneHandedFlipBtnRect.bottom + theme.keyShadowHeight
+            )
+            canvas.drawRoundRect(theme.reusableRectF, btnR, btnR, theme.keyShadowPaint)
+        }
+        val flipBg = if (pressedGutterBtn == 2) theme.keyPressedPaint else theme.keySpecialPaint
+        canvas.drawRoundRect(oneHandedFlipBtnRect, btnR, btnR, flipBg)
+        if (hasBorder) {
+            canvas.drawRoundRect(oneHandedFlipBtnRect, btnR, btnR, theme.keyBorderPaint)
+        }
+        // If keyboard is LEFT, gutter is RIGHT -> arrow points RIGHT to flip keyboard to RIGHT
+        val pointRight = (oneHandedMode == KeyboardPrefs.ONE_HANDED_LEFT)
+        drawFlipArrowIcon(
+            canvas,
+            oneHandedFlipBtnRect.centerX(),
+            oneHandedFlipBtnRect.centerY(),
+            oneHandedFlipBtnRect.width() * 0.25f,
+            pointRight,
+            theme.iconPaint
+        )
+    }
+
     private fun drawKeyPreviewPopup(canvas: Canvas, activeKey: KeyModel, radius: Float) {
         val kb = activeKey.bounds
         val desiredPopH = kb.height() * 1.18f
@@ -1194,7 +1537,100 @@ class KeyboardCanvasView(context: Context) : View(context) {
         }
     }
 
+    private fun drawEmojiSearchStrip(canvas: Canvas) {
+        val w = width.toFloat()
+        val h = currentStripHeight
+        canvas.drawRect(0f, 0f, w, h, theme.stripBgPaint)
+        canvas.drawRect(0f, h - density, w, h, theme.stripDividerPaint)
+
+        // 1. Left Search Input Pill: [vector magnifying glass] query [vector X]
+        val pillR = emojiSearchInputPillRect.height() * 0.5f
+        canvas.drawRoundRect(emojiSearchInputPillRect, pillR, pillR, theme.keyBgPaint)
+        canvas.drawRoundRect(emojiSearchInputPillRect, pillR, pillR, accentBorderPaint)
+
+        val pillCy = emojiSearchInputPillRect.centerY()
+        val glassCx = emojiSearchInputPillRect.left + 13f * density
+        drawSearchGlassIcon(canvas, glassCx, pillCy, 5.4f * density, theme.iconSecondaryPaint)
+
+        // Close [X] vector button on right edge of search pill
+        val closeCx = emojiSearchInputPillRect.right - 13f * density
+        if (emojiSearchClosePressed) {
+            canvas.drawCircle(closeCx, pillCy, 10f * density, theme.keyPressedPaint)
+        }
+        drawCloseXIcon(canvas, closeCx, pillCy, 4.2f * density, theme.iconSecondaryPaint)
+
+        // Query text or placeholder (100% zero-allocation using StringBuilder overload!)
+        val textLeft = glassCx + 9.5f * density
+        val textRight = closeCx - 9.5f * density
+        val availTextW = (textRight - textLeft).coerceAtLeast(8f * density)
+
+        canvas.save()
+        canvas.clipRect(textLeft, emojiSearchInputPillRect.top, textRight, emojiSearchInputPillRect.bottom)
+        if (emojiSearchQuery.isEmpty()) {
+            val phPaint = theme.textSecondaryPaint
+            val prevAlign = phPaint.textAlign
+            val prevSize = phPaint.textSize
+            phPaint.textAlign = Paint.Align.LEFT
+            phPaint.textSize = 12.5f * density
+            val baseline = pillCy - (phPaint.descent() + phPaint.ascent()) * 0.5f
+            canvas.drawText(SEARCH_PLACEHOLDER, textLeft, baseline, phPaint)
+            phPaint.textAlign = prevAlign
+            phPaint.textSize = prevSize
+        } else {
+            val qLen = emojiSearchQuery.length
+            val qW = searchQueryPaint.measureText(emojiSearchQuery, 0, qLen)
+            val drawX = if (qW > availTextW - 3f * density) {
+                textRight - 3f * density - qW
+            } else {
+                textLeft
+            }
+            val baseline = pillCy - (searchQueryPaint.descent() + searchQueryPaint.ascent()) * 0.5f
+            canvas.drawText(emojiSearchQuery, 0, qLen, drawX, baseline, searchQueryPaint)
+            // Crisp accent caret at end of query
+            val caretX = (drawX + qW + 1.5f * density).coerceAtMost(textRight - 1.5f * density)
+            val caretHalfH = 7f * density
+            canvas.drawRect(caretX, pillCy - caretHalfH, caretX + 1.5f * density, pillCy + caretHalfH, theme.accentPaint)
+        }
+        canvas.restore()
+
+        // 2. Right Scrollable Emoji Results Strip
+        val resRect = emojiSearchResultsRect
+        canvas.save()
+        canvas.clipRect(resRect)
+        val count = emojiSearchResults.size
+        if (count == 0) {
+            val baseline = resRect.centerY() - (theme.textSecondaryPaint.descent() + theme.textSecondaryPaint.ascent()) * 0.5f
+            canvas.drawText(SEARCH_NO_MATCH, resRect.centerX(), baseline, theme.textSecondaryPaint)
+            emojiSearchResultsMaxScrollX = 0f
+        } else {
+            val cellW = 38f * density
+            emojiSearchResultsMaxScrollX = (count * cellW - resRect.width()).coerceAtLeast(0f)
+            emojiSearchResultsScrollX = emojiSearchResultsScrollX.coerceIn(0f, emojiSearchResultsMaxScrollX)
+
+            val baseline = resRect.centerY() - (searchEmojiPaint.descent() + searchEmojiPaint.ascent()) * 0.5f
+            val pad = 3f * density
+            val cellR = 7f * density
+            for (i in 0 until count) {
+                val cellLeft = resRect.left + i * cellW - emojiSearchResultsScrollX
+                val cellRight = cellLeft + cellW
+                if (cellRight < resRect.left || cellLeft > resRect.right) continue
+
+                if (i == emojiSearchPressedResultIdx) {
+                    theme.reusableRectF.set(cellLeft + pad, pad, cellRight - pad, resRect.bottom - pad)
+                    canvas.drawRoundRect(theme.reusableRectF, cellR, cellR, theme.keyPressedPaint)
+                }
+                canvas.drawText(emojiSearchResults[i], (cellLeft + cellRight) * 0.5f, baseline, searchEmojiPaint)
+            }
+        }
+        canvas.restore()
+    }
+
     private fun drawSuggestionStrip(canvas: Canvas) {
+        if (isEmojiSearchMode) {
+            drawEmojiSearchStrip(canvas)
+            return
+        }
+
         val w = width.toFloat()
         val h = currentStripHeight
         canvas.drawRect(0f, 0f, w, h, theme.stripBgPaint)
@@ -1208,32 +1644,34 @@ class KeyboardCanvasView(context: Context) : View(context) {
                 return
             }
             // Idle utility bar (100% configurable):
-            // [0..44dp] Clipboard | [optional 44..88dp] Emoji | Center: Language | [optional EN/VI pill] | [optional Settings Gear]
+            // [Clipboard] [optional Emoji] | Center: Language | [optional EN/VI pill] [One-Handed] [optional Settings Gear]
             val btnW = stripSideBtnWidthPx
             val cy = h * 0.5f
             val hasBorder = theme.keyBorderWidth > 0f && (theme.colorKeyBorder ushr 24) > 0
             val showTopEmoji = (emojiButtonMode == KeyboardPrefs.EMOJI_BTN_TOP_BAR)
             val leftReserved = if (showTopEmoji) btnW * 2f else btnW
             val settingsW = if (showSettingsKey) btnW else 0f
-            val rightReserved = settingsW + (if (layout.hasMultipleLanguages) stripLangBtnWidthPx else 0f)
+            val oneHandedW = btnW
+            val langPillW = if (layout.hasMultipleLanguages) stripLangBtnWidthPx else 0f
+            val rightReserved = settingsW + oneHandedW + langPillW
 
-            // 1. Far-left slot (0..44dp): Clipboard icon
+            // 1. Far-left slot: Clipboard icon
             if (pressedStripAction == STRIP_ACTION_CLIPBOARD) {
                 canvas.drawRect(0f, 0f, btnW, h - density, theme.keyPressedPaint)
             }
-            drawClipboardIcon(canvas, btnW * 0.5f, cy, 8.5f * density, theme.iconSecondaryPaint)
+            drawClipboardIcon(canvas, btnW * 0.5f, cy, 8.2f * density, theme.iconSecondaryPaint)
             if (clipboardManager?.getClipItems()?.isNotEmpty() == true) {
-                canvas.drawCircle(btnW * 0.5f + 7.5f * density, cy - 7.5f * density, 2.2f * density, theme.accentPaint)
+                canvas.drawCircle(btnW * 0.5f + 7.2f * density, cy - 7.2f * density, 2.2f * density, theme.accentPaint)
             }
 
-            // 2. Optional second-left slot (44..88dp): Monochrome Emoji vector smiley
+            // 2. Optional second-left slot: Monochrome Emoji vector smiley
             if (showTopEmoji) {
                 if (pressedStripAction == STRIP_ACTION_EMOJI) {
                     canvas.drawRect(btnW, 0f, btnW * 2f, h - density, theme.keyPressedPaint)
                 }
                 val prevFillColor = theme.iconFillPaint.color
                 theme.iconFillPaint.color = theme.colorTextSecondary
-                drawEmojiSmileyIcon(canvas, btnW * 1.5f, cy, 8.5f * density, theme.iconSecondaryPaint, theme.iconFillPaint)
+                drawEmojiSmileyIcon(canvas, btnW * 1.5f, cy, 8.2f * density, theme.iconSecondaryPaint, theme.iconFillPaint)
                 theme.iconFillPaint.color = prevFillColor
             }
 
@@ -1242,13 +1680,28 @@ class KeyboardCanvasView(context: Context) : View(context) {
                 if (pressedStripAction == STRIP_ACTION_SETTINGS) {
                     canvas.drawRect(w - btnW, 0f, w, h - density, theme.keyPressedPaint)
                 }
-                drawGearIcon(canvas, w - btnW * 0.5f, cy, 8.5f * density, theme.iconSecondaryPaint)
+                drawGearIcon(canvas, w - btnW * 0.5f, cy, 8.2f * density, theme.iconSecondaryPaint)
             }
+
+            // 3b. One-Handed Mode 1-tap toggle vector button (left of Settings gear)
+            val ohRight = w - settingsW
+            val ohLeft = ohRight - oneHandedW
+            val ohActive = (oneHandedMode != KeyboardPrefs.ONE_HANDED_OFF)
+            if (pressedStripAction == STRIP_ACTION_ONE_HANDED) {
+                canvas.drawRect(ohLeft, 0f, ohRight, h - density, theme.keyPressedPaint)
+            } else if (ohActive) {
+                val pillPadH = 5f * density
+                val pillPadV = 5.5f * density
+                theme.reusableRectF.set(ohLeft + pillPadH, pillPadV, ohRight - pillPadH, h - pillPadV)
+                val pillR = theme.reusableRectF.height() * 0.5f
+                canvas.drawRoundRect(theme.reusableRectF, pillR, pillR, accentTintPaint)
+            }
+            drawOneHandedIcon(canvas, (ohLeft + ohRight) * 0.5f, cy, 8.2f * density, ohActive)
 
             // 4. Optional language pill (only when multiple languages enabled)
             if (layout.hasMultipleLanguages) {
                 val pillSlotLeft = w - rightReserved
-                val pillSlotRight = w - settingsW
+                val pillSlotRight = ohLeft
                 val pillCx = (pillSlotLeft + pillSlotRight) * 0.5f
                 val pillW = 34f * density
                 val pillH = 22f * density
@@ -1455,7 +1908,7 @@ class KeyboardCanvasView(context: Context) : View(context) {
             return
         }
 
-        val itemH = 52f * density
+        val itemH = 54f * density
         val itemGap = 6f * density
         val padH = 10f * density
         val stride = itemH + itemGap
@@ -1468,11 +1921,19 @@ class KeyboardCanvasView(context: Context) : View(context) {
 
         val radius = theme.keyCornerRadius
         val hasBorder = theme.keyBorderWidth > 0f && (theme.colorKeyBorder ushr 24) > 0
+        val actionBtnW = 36f * density
+        val cardLeft = padH
+        val cardRight = w - padH
+        val deleteBtnRight = cardRight - 2f * density
+        val deleteBtnLeft = deleteBtnRight - actionBtnW
+        val pinBtnRight = deleteBtnLeft
+        val pinBtnLeft = pinBtnRight - actionBtnW
+        val contentRight = (pinBtnLeft - 6f * density).coerceAtLeast(cardLeft + 32f * density)
+
         val textPad = 12f * density
-        val maxTextW = (w - padH * 2f - textPad * 2f).coerceAtLeast(24f * density)
         val ellipsisW = theme.clipTextPaint.measureText(ELLIPSIS)
         val thumbSize = 40f * density
-        val thumbPad = 6f * density
+        val thumbPad = 7f * density
         val thumbRadius = 6f * density
 
         for (i in clips.indices) {
@@ -1480,17 +1941,50 @@ class KeyboardCanvasView(context: Context) : View(context) {
             val bottom = top + itemH
             if (bottom < headerH || top > h) continue
 
-            theme.reusableRectF.set(padH, top, w - padH, bottom)
-            val cardPaint = if (i == clipPressedIndex) theme.keyPressedPaint else theme.keyBgPaint
+            val item = clips[i]
+            val isPinned = item.isPinned
+            val isBodyPressed = (i == clipPressedIndex && clipPressedAction == 0)
+            val isPinPressed = (i == clipPressedIndex && clipPressedAction == 1)
+            val isDeletePressed = (i == clipPressedIndex && clipPressedAction == 2)
+
+            theme.reusableRectF.set(cardLeft, top, cardRight, bottom)
+            val cardPaint = if (isBodyPressed) theme.keyPressedPaint else theme.keyBgPaint
             canvas.drawRoundRect(theme.reusableRectF, radius, radius, cardPaint)
-            if (hasBorder) {
+
+            if (isPinned) {
+                // Crisp left accent indicator bar + subtle tinted accent border for pinned clips
+                val barW = 3.2f * density
+                theme.reusableRectF.set(cardLeft + 2f * density, top + 6f * density, cardLeft + 2f * density + barW, bottom - 6f * density)
+                canvas.drawRoundRect(theme.reusableRectF, barW * 0.5f, barW * 0.5f, theme.accentPaint)
+                theme.reusableRectF.set(cardLeft, top, cardRight, bottom)
+                canvas.drawRoundRect(theme.reusableRectF, radius, radius, accentBorderPaint)
+            } else if (hasBorder) {
                 canvas.drawRoundRect(theme.reusableRectF, radius, radius, theme.keyBorderPaint)
             }
 
-            val item = clips[i]
+            // Right-edge action buttons: [Pin/Unpin vector pushpin] [Delete vector X]
+            val cy = (top + bottom) * 0.5f
+            val pinCx = (pinBtnLeft + pinBtnRight) * 0.5f
+            val delCx = (deleteBtnLeft + deleteBtnRight) * 0.5f
+            val actionCircleR = 14.5f * density
+
+            if (isPinPressed) {
+                canvas.drawCircle(pinCx, cy, actionCircleR, theme.keyPressedPaint)
+            } else if (isPinned) {
+                canvas.drawCircle(pinCx, cy, actionCircleR, accentTintPaint)
+            }
+            drawPushpinIcon(canvas, pinCx, cy, 6.4f * density, isPinned)
+
+            if (isDeletePressed) {
+                canvas.drawCircle(delCx, cy, actionCircleR, theme.keyPressedPaint)
+            }
+            drawCloseXIcon(canvas, delCx, cy, 4.6f * density, theme.iconSecondaryPaint)
+
+            // Content area (left of action buttons)
+            val leftInset = if (isPinned) 5f * density else 0f
             if (item.isImage) {
-                val thumbLeft = theme.reusableRectF.left + thumbPad
-                val thumbTop = theme.reusableRectF.top + (itemH - thumbSize) * 0.5f
+                val thumbLeft = cardLeft + thumbPad + leftInset
+                val thumbTop = top + (itemH - thumbSize) * 0.5f
                 clipThumbDstRect.set(thumbLeft, thumbTop, thumbLeft + thumbSize, thumbTop + thumbSize)
 
                 val uriStr = item.imageUri
@@ -1523,18 +2017,21 @@ class KeyboardCanvasView(context: Context) : View(context) {
                     )
                 }
 
-                val labelX = clipThumbDstRect.right + 12f * density
-                val titleY = theme.reusableRectF.top + itemH * 0.41f -
+                val labelX = clipThumbDstRect.right + 10f * density
+                canvas.save()
+                canvas.clipRect(labelX, top, contentRight, bottom)
+                val titleY = top + itemH * 0.40f -
                     (theme.clipTextPaint.descent() + theme.clipTextPaint.ascent()) * 0.5f
                 canvas.drawText(CLIP_IMAGE_LABEL, labelX, titleY, theme.clipTextPaint)
 
                 val subPaint = theme.textSecondaryPaint
                 val prevAlign = subPaint.textAlign
                 subPaint.textAlign = Paint.Align.LEFT
-                val subY = theme.reusableRectF.top + itemH * 0.70f -
+                val subY = top + itemH * 0.69f -
                     (subPaint.descent() + subPaint.ascent()) * 0.5f
                 canvas.drawText(imageMimeSubtitle(item.mimeType), labelX, subY, subPaint)
                 subPaint.textAlign = prevAlign
+                canvas.restore()
                 continue
             }
 
@@ -1544,9 +2041,9 @@ class KeyboardCanvasView(context: Context) : View(context) {
             val hasMoreLines = lineEnd >= 0
             if (lineEnd < 0) lineEnd = clip.length
 
-            val baseline = theme.reusableRectF.centerY() -
-                (theme.clipTextPaint.descent() + theme.clipTextPaint.ascent()) * 0.5f
-            val textX = theme.reusableRectF.left + textPad
+            val baseline = cy - (theme.clipTextPaint.descent() + theme.clipTextPaint.ascent()) * 0.5f
+            val textX = cardLeft + textPad + leftInset
+            val maxTextW = (contentRight - textX).coerceAtLeast(16f * density)
 
             val measured = theme.clipTextPaint.measureText(clip, 0, lineEnd)
             if (!hasMoreLines && measured <= maxTextW) {
@@ -1575,13 +2072,21 @@ class KeyboardCanvasView(context: Context) : View(context) {
         val headerH = stripHeightPx
         val btnW = 68f * density
         val w = width.toFloat()
+        val padH = 10f * density
+        val cardRight = w - padH
+        val actionBtnW = 36f * density
+        val deleteBtnLeft = cardRight - 2f * density - actionBtnW
+        val pinBtnLeft = deleteBtnLeft - actionBtnW
 
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
+                mainHandler.removeCallbacks(clipLongPressRunnable)
                 clipTouchStartY = y
                 clipLastTouchY = y
                 clipDragging = false
                 clipPressedIndex = -1
+                clipPressedAction = 0
+                clipLongPressTriggered = false
                 clipHeaderBtnPressed = 0
 
                 if (y < headerH) {
@@ -1591,7 +2096,18 @@ class KeyboardCanvasView(context: Context) : View(context) {
                         clipHeaderBtnPressed = 2
                     }
                 } else {
-                    clipPressedIndex = findClipIndexAt(y, headerH)
+                    val idx = findClipIndexAt(y, headerH)
+                    clipPressedIndex = idx
+                    if (idx >= 0) {
+                        clipPressedAction = when {
+                            x >= deleteBtnLeft && x <= cardRight + 4f * density -> 2 // Delete
+                            x >= pinBtnLeft && x < deleteBtnLeft -> 1 // Pin
+                            else -> 0 // Card body
+                        }
+                        if (clipPressedAction == 0) {
+                            mainHandler.postDelayed(clipLongPressRunnable, longPressDelayMs)
+                        }
+                    }
                 }
                 invalidate()
                 return true
@@ -1606,8 +2122,10 @@ class KeyboardCanvasView(context: Context) : View(context) {
                     return true
                 }
                 if (!clipDragging && abs(y - clipTouchStartY) > touchSlop) {
+                    mainHandler.removeCallbacks(clipLongPressRunnable)
                     clipDragging = true
                     clipPressedIndex = -1
+                    clipPressedAction = 0
                 }
                 if (clipDragging) {
                     val dy = clipLastTouchY - y
@@ -1619,44 +2137,82 @@ class KeyboardCanvasView(context: Context) : View(context) {
             }
 
             MotionEvent.ACTION_UP -> {
+                mainHandler.removeCallbacks(clipLongPressRunnable)
+                if (clipLongPressTriggered) {
+                    clipLongPressTriggered = false
+                    clipPressedIndex = -1
+                    clipPressedAction = 0
+                    clipDragging = false
+                    invalidate()
+                    return true
+                }
                 if (clipHeaderBtnPressed == 1 && y < headerH && x < btnW) {
                     triggerHaptic()
                     closeClipboardOverlay()
                 } else if (clipHeaderBtnPressed == 2 && y < headerH && x > w - btnW) {
                     triggerHaptic()
-                    clipboardManager?.clear()
-                    closeClipboardOverlay()
-                } else if (!clipDragging && clipPressedIndex >= 0) {
-                    val clips = clipboardManager?.getClipItems()
-                    if (clips != null && clipPressedIndex in clips.indices) {
-                        val selected = clips[clipPressedIndex]
-                        triggerHaptic()
+                    clipboardManager?.clear(includePinned = false)
+                    clearClipboardThumbnails()
+                    if (clipboardManager?.getClipItems()?.isEmpty() != false) {
                         closeClipboardOverlay()
-                        if (selected.isImage) {
-                            val uriStr = selected.imageUri
-                            if (!uriStr.isNullOrEmpty()) {
-                                actionListener?.onImageClipSelected(uriStr, selected.mimeType ?: "image/*")
-                            }
-                        } else {
-                            val text = selected.text
-                            if (!text.isNullOrEmpty()) {
-                                actionListener?.onClipSelected(text)
+                    }
+                } else if (!clipDragging && clipPressedIndex >= 0) {
+                    val idx = clipPressedIndex
+                    val action = clipPressedAction
+                    when (action) {
+                        1 -> {
+                            // Pin / Unpin clip in place (togglePin returns new pinned state, so always haptic + redraw)
+                            val cm = clipboardManager
+                            val clips = cm?.getClipItems()
+                            if (cm != null && clips != null && idx in clips.indices) {
+                                cm.togglePin(idx)
+                                triggerHaptic()
                             }
                         }
-                    } else {
-                        closeClipboardOverlay()
+                        2 -> {
+                            // Delete single clip
+                            if (clipboardManager?.removeAt(idx) == true) {
+                                triggerHaptic()
+                                clearClipboardThumbnails()
+                            }
+                        }
+                        else -> {
+                            val clips = clipboardManager?.getClipItems()
+                            if (clips != null && idx in clips.indices) {
+                                val selected = clips[idx]
+                                triggerHaptic()
+                                closeClipboardOverlay()
+                                if (selected.isImage) {
+                                    val uriStr = selected.imageUri
+                                    if (!uriStr.isNullOrEmpty()) {
+                                        actionListener?.onImageClipSelected(uriStr, selected.mimeType ?: "image/*")
+                                    }
+                                } else {
+                                    val text = selected.text
+                                    if (!text.isNullOrEmpty()) {
+                                        actionListener?.onClipSelected(text)
+                                    }
+                                }
+                            } else {
+                                closeClipboardOverlay()
+                            }
+                        }
                     }
                 }
                 clipHeaderBtnPressed = 0
                 clipPressedIndex = -1
+                clipPressedAction = 0
                 clipDragging = false
                 invalidate()
                 return true
             }
 
             MotionEvent.ACTION_CANCEL -> {
+                mainHandler.removeCallbacks(clipLongPressRunnable)
                 clipHeaderBtnPressed = 0
                 clipPressedIndex = -1
+                clipPressedAction = 0
+                clipLongPressTriggered = false
                 clipDragging = false
                 invalidate()
                 return true
@@ -1668,7 +2224,7 @@ class KeyboardCanvasView(context: Context) : View(context) {
     private fun findClipIndexAt(y: Float, headerH: Float): Int {
         val clips = clipboardManager?.getClipItems() ?: return -1
         if (clips.isEmpty()) return -1
-        val itemH = 52f * density
+        val itemH = 54f * density
         val itemGap = 6f * density
         val stride = itemH + itemGap
         val relY = y - headerH - itemGap + clipScrollY
@@ -1679,19 +2235,25 @@ class KeyboardCanvasView(context: Context) : View(context) {
     }
 
     private fun openClipboardOverlay() {
+        exitEmojiSearchMode(notifyInvalidate = false)
         resetAllTouches()
         clearKeyAnimations()
         isClipboardOpen = true
         clipScrollY = 0f
         clipPressedIndex = -1
+        clipPressedAction = 0
+        clipLongPressTriggered = false
         clipHeaderBtnPressed = 0
         invalidate()
     }
 
     private fun closeClipboardOverlay() {
+        mainHandler.removeCallbacks(clipLongPressRunnable)
         isClipboardOpen = false
         clearClipboardThumbnails()
         clipPressedIndex = -1
+        clipPressedAction = 0
+        clipLongPressTriggered = false
         clipHeaderBtnPressed = 0
         invalidate()
     }
@@ -1747,7 +2309,24 @@ class KeyboardCanvasView(context: Context) : View(context) {
                     !hasAnyActiveKeyPointer()
                 ) {
                     stripPointerId = pointerId
-                    handleStripDownOrMove(px, py)
+                    if (isEmojiSearchMode) {
+                        handleEmojiSearchStripDown(px, py)
+                    } else {
+                        handleStripDownOrMove(px, py)
+                    }
+                    invalidate()
+                    return true
+                }
+
+                // One-Handed Mode Side Gutter controls (Expand / Flip)
+                if (event.actionMasked == MotionEvent.ACTION_DOWN &&
+                    oneHandedMode != KeyboardPrefs.ONE_HANDED_OFF &&
+                    !oneHandedGutterRect.isEmpty &&
+                    oneHandedGutterRect.contains(px, py) &&
+                    !hasAnyActiveKeyPointer()
+                ) {
+                    oneHandedGutterPointerId = pointerId
+                    pressedGutterBtn = hitTestOneHandedGutter(px, py)
                     invalidate()
                     return true
                 }
@@ -1762,7 +2341,9 @@ class KeyboardCanvasView(context: Context) : View(context) {
                     if (idx >= 0) {
                         val sx = event.getX(idx)
                         val sy = event.getY(idx)
-                        if (sy > currentStripHeight + touchSlop) {
+                        if (isEmojiSearchMode) {
+                            handleEmojiSearchStripMove(sx, sy)
+                        } else if (sy > currentStripHeight + touchSlop) {
                             // Dragged vertically out of suggestion strip -> cancel selection cleanly
                             pressedSuggestionIndex = -1
                             pressedStripAction = STRIP_ACTION_NONE
@@ -1771,6 +2352,24 @@ class KeyboardCanvasView(context: Context) : View(context) {
                             handleStripDownOrMove(sx, sy)
                         }
                         invalidate()
+                    }
+                    return true
+                }
+
+                if (oneHandedGutterPointerId != -1) {
+                    val idx = event.findPointerIndex(oneHandedGutterPointerId)
+                    if (idx >= 0) {
+                        val gx = event.getX(idx)
+                        val gy = event.getY(idx)
+                        val nextHit = if (oneHandedGutterRect.contains(gx, gy)) {
+                            hitTestOneHandedGutter(gx, gy)
+                        } else {
+                            0
+                        }
+                        if (nextHit != pressedGutterBtn) {
+                            pressedGutterBtn = nextHit
+                            invalidate()
+                        }
                     }
                     return true
                 }
@@ -1785,8 +2384,21 @@ class KeyboardCanvasView(context: Context) : View(context) {
                 val pointerId = event.getPointerId(actionIndex)
 
                 if (pointerId == stripPointerId) {
-                    handleStripUp()
+                    val sx = event.getX(actionIndex)
+                    val sy = event.getY(actionIndex)
+                    if (isEmojiSearchMode) {
+                        handleEmojiSearchStripUp(sx, sy)
+                    } else {
+                        handleStripUp()
+                    }
                     stripPointerId = -1
+                    invalidate()
+                    return true
+                }
+
+                if (pointerId == oneHandedGutterPointerId) {
+                    handleOneHandedGutterUp()
+                    oneHandedGutterPointerId = -1
                     invalidate()
                     return true
                 }
@@ -1861,7 +2473,11 @@ class KeyboardCanvasView(context: Context) : View(context) {
             KeyModel.TYPE_DELETE -> {
                 deleteSlot = slot
                 deleteSwipeTriggered = false
-                actionListener?.onBackspace()
+                if (isEmojiSearchMode) {
+                    handleEmojiSearchBackspace()
+                } else {
+                    actionListener?.onBackspace()
+                }
                 mainHandler.removeCallbacks(backspaceRepeatRunnable)
                 mainHandler.postDelayed(backspaceRepeatRunnable, 350L)
             }
@@ -1869,8 +2485,9 @@ class KeyboardCanvasView(context: Context) : View(context) {
             KeyModel.TYPE_SPACE -> {
                 spaceSlot = slot
                 spaceGlideActive = false
+                spaceGlideSelectionMode = false
                 spaceLastStepX = px
-                if (spaceLongPressLangEnabled && layout.hasMultipleLanguages) {
+                if (!isEmojiSearchMode && spaceLongPressLangEnabled && layout.hasMultipleLanguages) {
                     mainHandler.removeCallbacks(longPressRunnable)
                     longPressSlot = slot
                     mainHandler.postDelayed(longPressRunnable, longPressDelayMs)
@@ -1889,7 +2506,7 @@ class KeyboardCanvasView(context: Context) : View(context) {
             }
 
             KeyModel.TYPE_ENTER -> {
-                if (longPressEnterAction != KeyboardPrefs.ENTER_LONG_PRESS_NONE) {
+                if (!isEmojiSearchMode && longPressEnterAction != KeyboardPrefs.ENTER_LONG_PRESS_NONE) {
                     mainHandler.removeCallbacks(longPressRunnable)
                     longPressSlot = slot
                     mainHandler.postDelayed(longPressRunnable, longPressDelayMs)
@@ -1898,13 +2515,15 @@ class KeyboardCanvasView(context: Context) : View(context) {
 
             KeyModel.TYPE_SWITCH_SYMBOLS,
             KeyModel.TYPE_SWITCH_LANG -> {
-                mainHandler.removeCallbacks(longPressRunnable)
-                longPressSlot = slot
-                mainHandler.postDelayed(longPressRunnable, longPressDelayMs)
+                if (!isEmojiSearchMode) {
+                    mainHandler.removeCallbacks(longPressRunnable)
+                    longPressSlot = slot
+                    mainHandler.postDelayed(longPressRunnable, longPressDelayMs)
+                }
             }
 
             KeyModel.TYPE_NORMAL -> {
-                if (longPressSymbolsEnabled && layout.currentMode == KeyboardLayout.Mode.ALPHA) {
+                if (!isEmojiSearchMode && longPressSymbolsEnabled && layout.currentMode == KeyboardLayout.Mode.ALPHA) {
                     val hasAccents = getAccentVariantsForKey(key) != null
                     val hasSub = !key.subLabel.isNullOrEmpty()
                     if (hasAccents || hasSub) {
@@ -1961,12 +2580,17 @@ class KeyboardCanvasView(context: Context) : View(context) {
                 continue
             }
 
-            // 1. Spacebar Horizontal Cursor Glide (cancels Space long-press immediately on drag)
+            // 1. Spacebar Horizontal Cursor Glide / Shift+Spacebar Drag Selection
             if (slot == spaceSlot && key.type == KeyModel.TYPE_SPACE) {
-                if (spaceCursorGlideEnabled) {
+                if (!isEmojiSearchMode && spaceCursorGlideEnabled) {
                     if (!spaceGlideActive && abs(px - pointerDownX[slot]) > touchSlop) {
                         spaceGlideActive = true
                         spaceLastStepX = px
+                        val isSelectChord = (shiftHoldSlot != -1) || layout.isShifted || layout.isCapsLock
+                        spaceGlideSelectionMode = isSelectChord
+                        if (isSelectChord && shiftHoldSlot != -1) {
+                            shiftUsedAsChord = true
+                        }
                         if (longPressSlot == slot) {
                             mainHandler.removeCallbacks(longPressRunnable)
                             longPressSlot = -1
@@ -1974,12 +2598,29 @@ class KeyboardCanvasView(context: Context) : View(context) {
                         needsInvalidate = true
                     }
                     if (spaceGlideActive) {
+                        val isSelectChord = (shiftHoldSlot != -1) || layout.isShifted || layout.isCapsLock
+                        if (isSelectChord) {
+                            if (!spaceGlideSelectionMode) {
+                                spaceGlideSelectionMode = true
+                                needsInvalidate = true
+                            }
+                            if (shiftHoldSlot != -1) {
+                                shiftUsedAsChord = true
+                            }
+                        } else if (spaceGlideSelectionMode) {
+                            spaceGlideSelectionMode = false
+                            needsInvalidate = true
+                        }
                         val stepPx = 18f * density
                         val dx = px - spaceLastStepX
                         if (abs(dx) >= stepPx) {
                             val steps = (dx / stepPx).toInt()
                             spaceLastStepX += steps * stepPx
-                            actionListener?.onMoveCursor(steps)
+                            if (spaceGlideSelectionMode) {
+                                actionListener?.onSelectCursor(steps)
+                            } else {
+                                actionListener?.onMoveCursor(steps)
+                            }
                             triggerHaptic()
                         }
                     }
@@ -1987,14 +2628,23 @@ class KeyboardCanvasView(context: Context) : View(context) {
                 continue
             }
 
-            // 2. Backspace Left-Swipe to Delete Whole Word
+            // 2. Backspace Left-Swipe to Delete Whole Word (or clear Emoji Search query)
             if (slot == deleteSlot && key.type == KeyModel.TYPE_DELETE) {
                 if (swipeDeleteWordEnabled && !deleteSwipeTriggered && (pointerDownX[slot] - px) > 36f * density) {
                     deleteSwipeTriggered = true
                     mainHandler.removeCallbacks(backspaceRepeatRunnable)
                     triggerHaptic()
                     playKeySound(KeyModel.TYPE_DELETE)
-                    actionListener?.onDeleteWord()
+                    if (isEmojiSearchMode) {
+                        if (emojiSearchQuery.isNotEmpty()) {
+                            emojiSearchQuery.setLength(0)
+                            refreshEmojiSearchResults()
+                        } else {
+                            exitEmojiSearchMode()
+                        }
+                    } else {
+                        actionListener?.onDeleteWord()
+                    }
                     needsInvalidate = true
                 }
                 continue
@@ -2057,9 +2707,15 @@ class KeyboardCanvasView(context: Context) : View(context) {
         }
 
         val wasSpaceGlide = (spaceSlot == slot && spaceGlideActive)
+        val wasSpaceGlideSelection = (wasSpaceGlide && spaceGlideSelectionMode)
         if (spaceSlot == slot) {
             spaceSlot = -1
             spaceGlideActive = false
+            spaceGlideSelectionMode = false
+        }
+        if (wasSpaceGlideSelection && layout.isShifted && !layout.isCapsLock && shiftHoldSlot == -1) {
+            // Release one-shot Shift cleanly after finishing Shift+Spacebar drag selection
+            layout.updateShiftState(shifted = false, caps = false)
         }
 
         val wasEnterPopup = (isEnterPopupActive && enterPopupSlot == slot)
@@ -2181,13 +2837,17 @@ class KeyboardCanvasView(context: Context) : View(context) {
             val showTopEmoji = (emojiButtonMode == KeyboardPrefs.EMOJI_BTN_TOP_BAR)
             val leftReserved = if (showTopEmoji) btnW * 2f else btnW
             val settingsW = if (showSettingsKey) btnW else 0f
+            val oneHandedW = btnW
             val multiLang = layout.hasMultipleLanguages
-            val rightReserved = settingsW + (if (multiLang) stripLangBtnWidthPx else 0f)
+            val langPillW = if (multiLang) stripLangBtnWidthPx else 0f
+            val rightReserved = settingsW + oneHandedW + langPillW
+            val ohLeft = w - settingsW - oneHandedW
             pressedStripAction = when {
                 x < btnW -> STRIP_ACTION_CLIPBOARD
                 showTopEmoji && x < btnW * 2f -> STRIP_ACTION_EMOJI
                 showSettingsKey && x >= w - settingsW -> STRIP_ACTION_SETTINGS
-                multiLang && x >= w - rightReserved -> STRIP_ACTION_LANG_PILL
+                x >= ohLeft && x < w - settingsW -> STRIP_ACTION_ONE_HANDED
+                multiLang && x >= w - rightReserved && x < ohLeft -> STRIP_ACTION_LANG_PILL
                 multiLang && x >= leftReserved && x < w - rightReserved -> STRIP_ACTION_LANG_CENTER
                 else -> STRIP_ACTION_NONE
             }
@@ -2225,6 +2885,16 @@ class KeyboardCanvasView(context: Context) : View(context) {
                 playKeySound(KeyModel.TYPE_NORMAL)
                 setEmojiMode(true)
             }
+            STRIP_ACTION_ONE_HANDED -> {
+                triggerHaptic()
+                playKeySound(KeyModel.TYPE_NORMAL)
+                val nextMode = if (oneHandedMode == KeyboardPrefs.ONE_HANDED_OFF) {
+                    KeyboardPrefs.ONE_HANDED_RIGHT
+                } else {
+                    KeyboardPrefs.ONE_HANDED_OFF
+                }
+                applyOneHandedModeFromUi(nextMode)
+            }
             STRIP_ACTION_LANG_PILL,
             STRIP_ACTION_LANG_CENTER -> {
                 if (layout.hasMultipleLanguages) {
@@ -2238,6 +2908,224 @@ class KeyboardCanvasView(context: Context) : View(context) {
                 playKeySound(KeyModel.TYPE_NORMAL)
                 actionListener?.onOpenSettings()
             }
+        }
+    }
+
+    // --- ONE-HANDED MODE GUTTER TOUCH HANDLING ---
+
+    private fun hitTestOneHandedGutter(x: Float, y: Float): Int {
+        if (oneHandedGutterRect.isEmpty) return 0
+        val pad = 10f * density
+        if (x >= oneHandedExpandBtnRect.left - pad &&
+            x <= oneHandedExpandBtnRect.right + pad &&
+            y >= oneHandedExpandBtnRect.top - pad &&
+            y <= oneHandedExpandBtnRect.bottom + pad
+        ) {
+            return 1
+        }
+        if (x >= oneHandedFlipBtnRect.left - pad &&
+            x <= oneHandedFlipBtnRect.right + pad &&
+            y >= oneHandedFlipBtnRect.top - pad &&
+            y <= oneHandedFlipBtnRect.bottom + pad
+        ) {
+            return 2
+        }
+        return 0
+    }
+
+    private fun handleOneHandedGutterUp() {
+        val btn = pressedGutterBtn
+        pressedGutterBtn = 0
+        when (btn) {
+            1 -> {
+                // Expand back to full width
+                triggerHaptic()
+                playKeySound(KeyModel.TYPE_NORMAL)
+                applyOneHandedModeFromUi(KeyboardPrefs.ONE_HANDED_OFF)
+            }
+            2 -> {
+                // Flip LEFT <-> RIGHT
+                triggerHaptic()
+                playKeySound(KeyModel.TYPE_NORMAL)
+                val nextMode = if (oneHandedMode == KeyboardPrefs.ONE_HANDED_LEFT) {
+                    KeyboardPrefs.ONE_HANDED_RIGHT
+                } else {
+                    KeyboardPrefs.ONE_HANDED_LEFT
+                }
+                applyOneHandedModeFromUi(nextMode)
+            }
+        }
+    }
+
+    private fun applyOneHandedModeFromUi(mode: Int) {
+        if (oneHandedMode == mode) return
+        oneHandedMode = mode
+        if (width > 0 && height > 0) {
+            remeasureInternal(width, height)
+        }
+        actionListener?.onOneHandedModeChanged(mode)
+        invalidate()
+    }
+
+    // --- INLINE ENGLISH EMOJI SEARCH HANDLING ---
+
+    fun enterEmojiSearchMode() {
+        resetAllTouches()
+        clearKeyAnimations()
+        if (isClipboardOpen) {
+            isClipboardOpen = false
+            clearClipboardThumbnails()
+        }
+        isEmojiMode = false
+        isEmojiSearchMode = true
+        layout.currentMode = KeyboardLayout.Mode.ALPHA
+        layout.updateShiftState(shifted = false, caps = false)
+        emojiSearchQuery.setLength(0)
+        emojiSearchResultsScrollX = 0f
+        emojiSearchDragging = false
+        emojiSearchPressedResultIdx = -1
+        emojiSearchClosePressed = false
+        refreshEmojiSearchResults()
+        requestLayout()
+        if (width > 0 && height > 0) {
+            remeasureInternal(width, height)
+        }
+        invalidate()
+    }
+
+    fun exitEmojiSearchMode(notifyInvalidate: Boolean = true) {
+        if (!isEmojiSearchMode) return
+        isEmojiSearchMode = false
+        emojiSearchQuery.setLength(0)
+        emojiSearchResults.clear()
+        emojiSearchResultsScrollX = 0f
+        emojiSearchResultsMaxScrollX = 0f
+        emojiSearchDragging = false
+        emojiSearchPressedResultIdx = -1
+        emojiSearchClosePressed = false
+        EmojiSearchIndex.release()
+        if (notifyInvalidate) {
+            requestLayout()
+            if (width > 0 && height > 0) {
+                remeasureInternal(width, height)
+            }
+            invalidate()
+        }
+    }
+
+    private fun refreshEmojiSearchResults() {
+        emojiSearchResults.clear()
+        emojiSearchResultsScrollX = 0f
+        if (emojiSearchQuery.isEmpty()) {
+            // Show recent emojis first, topped up with popular smileys for instant 1-tap picks
+            val recents = historyManager?.getRecentList()
+            if (recents != null) {
+                for (i in recents.indices) {
+                    if (emojiSearchResults.size >= 16) break
+                    emojiSearchResults.add(recents[i])
+                }
+            }
+            val defaults = EmojiData.SMILEYS
+            for (i in defaults.indices) {
+                if (emojiSearchResults.size >= 16) break
+                val e = defaults[i]
+                if (!emojiSearchResults.contains(e)) {
+                    emojiSearchResults.add(e)
+                }
+            }
+        } else {
+            EmojiSearchIndex.search(emojiSearchQuery.toString(), emojiSearchResults, 28)
+        }
+    }
+
+    private fun handleEmojiSearchChar(c: Char) {
+        if (emojiSearchQuery.length < MAX_EMOJI_SEARCH_LEN) {
+            emojiSearchQuery.append(c.lowercaseChar())
+            refreshEmojiSearchResults()
+        }
+    }
+
+    private fun handleEmojiSearchSpace() {
+        if (emojiSearchQuery.isNotEmpty() &&
+            emojiSearchQuery.length < MAX_EMOJI_SEARCH_LEN &&
+            emojiSearchQuery[emojiSearchQuery.length - 1] != ' '
+        ) {
+            emojiSearchQuery.append(' ')
+            refreshEmojiSearchResults()
+        }
+    }
+
+    private fun handleEmojiSearchBackspace() {
+        if (emojiSearchQuery.isNotEmpty()) {
+            emojiSearchQuery.setLength(emojiSearchQuery.length - 1)
+            refreshEmojiSearchResults()
+        } else {
+            exitEmojiSearchMode()
+        }
+    }
+
+    private fun handleEmojiSearchStripDown(x: Float, y: Float) {
+        emojiSearchTouchStartX = x
+        emojiSearchLastTouchX = x
+        emojiSearchDragging = false
+        emojiSearchPressedResultIdx = -1
+        emojiSearchClosePressed = false
+
+        if (emojiSearchCloseBtnRect.contains(x, y)) {
+            emojiSearchClosePressed = true
+            return
+        }
+        if (emojiSearchResultsRect.contains(x, y) && emojiSearchResults.isNotEmpty()) {
+            val cellW = 38f * density
+            val idx = ((x - emojiSearchResultsRect.left + emojiSearchResultsScrollX) / cellW).toInt()
+            if (idx in emojiSearchResults.indices) {
+                emojiSearchPressedResultIdx = idx
+            }
+        }
+    }
+
+    private fun handleEmojiSearchStripMove(x: Float, y: Float) {
+        if (emojiSearchClosePressed) {
+            if (!emojiSearchCloseBtnRect.contains(x, y)) {
+                emojiSearchClosePressed = false
+            }
+            return
+        }
+        if (!emojiSearchDragging && emojiSearchResultsMaxScrollX > 0f && abs(x - emojiSearchTouchStartX) > touchSlop) {
+            emojiSearchDragging = true
+            emojiSearchPressedResultIdx = -1
+        }
+        if (emojiSearchDragging) {
+            val dx = emojiSearchLastTouchX - x
+            emojiSearchResultsScrollX = (emojiSearchResultsScrollX + dx).coerceIn(0f, emojiSearchResultsMaxScrollX)
+            emojiSearchLastTouchX = x
+        } else if (y > currentStripHeight + touchSlop) {
+            emojiSearchPressedResultIdx = -1
+        }
+    }
+
+    private fun handleEmojiSearchStripUp(x: Float, y: Float) {
+        if (emojiSearchClosePressed) {
+            emojiSearchClosePressed = false
+            if (emojiSearchCloseBtnRect.contains(x, y)) {
+                triggerHaptic()
+                playKeySound(KeyModel.TYPE_NORMAL)
+                exitEmojiSearchMode()
+            }
+            return
+        }
+        val wasDragging = emojiSearchDragging
+        val pressedIdx = emojiSearchPressedResultIdx
+        emojiSearchDragging = false
+        emojiSearchPressedResultIdx = -1
+
+        if (!wasDragging && pressedIdx in emojiSearchResults.indices) {
+            val emoji = emojiSearchResults[pressedIdx]
+            triggerHaptic()
+            playKeySound(KeyModel.TYPE_NORMAL)
+            val hm = historyManager ?: EmojiHistoryManager(context).also { historyManager = it }
+            hm.addRecent(emoji)
+            actionListener?.onEmoji(emoji)
         }
     }
 
@@ -2319,6 +3207,7 @@ class KeyboardCanvasView(context: Context) : View(context) {
             deleteSwipeTriggered = false
             spaceSlot = -1
             spaceGlideActive = false
+            spaceGlideSelectionMode = false
             shiftHoldSlot = -1
             longPressSlot = -1
         }
@@ -2343,10 +3232,16 @@ class KeyboardCanvasView(context: Context) : View(context) {
         pressedSuggestionIndex = -1
         pressedStripAction = STRIP_ACTION_NONE
         stripPointerId = -1
+        oneHandedGutterPointerId = -1
+        pressedGutterBtn = 0
+        emojiSearchDragging = false
+        emojiSearchPressedResultIdx = -1
+        emojiSearchClosePressed = false
         deleteSlot = -1
         deleteSwipeTriggered = false
         spaceSlot = -1
         spaceGlideActive = false
+        spaceGlideSelectionMode = false
         shiftHoldSlot = -1
         shiftUsedAsChord = false
         longPressSlot = -1
@@ -2394,6 +3289,37 @@ class KeyboardCanvasView(context: Context) : View(context) {
     }
 
     private fun dispatchKeyAction(key: KeyModel) {
+        if (isEmojiSearchMode) {
+            when (key.type) {
+                KeyModel.TYPE_NORMAL -> {
+                    val label = key.label
+                    if (label.isNotEmpty()) {
+                        handleEmojiSearchChar(label[0])
+                    }
+                    if (layout.isShifted && !layout.isCapsLock && shiftHoldSlot == -1) {
+                        layout.updateShiftState(shifted = false, caps = false)
+                    }
+                    return
+                }
+                KeyModel.TYPE_SPACE -> {
+                    handleEmojiSearchSpace()
+                    return
+                }
+                KeyModel.TYPE_DELETE -> {
+                    return
+                }
+                KeyModel.TYPE_ENTER -> {
+                    exitEmojiSearchMode()
+                    return
+                }
+                KeyModel.TYPE_EMOJI -> {
+                    exitEmojiSearchMode(notifyInvalidate = false)
+                    setEmojiMode(true)
+                    return
+                }
+            }
+        }
+
         when (key.type) {
             KeyModel.TYPE_NORMAL -> {
                 val label = key.label
@@ -2447,6 +3373,7 @@ class KeyboardCanvasView(context: Context) : View(context) {
             }
 
             KeyModel.TYPE_SWITCH_NUMPAD -> {
+                exitEmojiSearchMode(notifyInvalidate = false)
                 resetAllTouches()
                 clearKeyAnimations()
                 layout.currentMode = KeyboardLayout.Mode.NUMPAD
@@ -2469,6 +3396,7 @@ class KeyboardCanvasView(context: Context) : View(context) {
     }
 
     fun setEmojiMode(enabled: Boolean) {
+        exitEmojiSearchMode(notifyInvalidate = false)
         resetAllTouches()
         clearKeyAnimations()
         if (isClipboardOpen) {
@@ -2484,6 +3412,7 @@ class KeyboardCanvasView(context: Context) : View(context) {
     }
 
     fun switchToNumpad() {
+        exitEmojiSearchMode(notifyInvalidate = false)
         resetAllTouches()
         clearKeyAnimations()
         if (isClipboardOpen) {
@@ -2497,6 +3426,7 @@ class KeyboardCanvasView(context: Context) : View(context) {
     }
 
     fun switchToAlpha() {
+        exitEmojiSearchMode(notifyInvalidate = false)
         resetAllTouches()
         clearKeyAnimations()
         if (isClipboardOpen) {

@@ -11,15 +11,28 @@ typealias ClipItem = ClipboardHistoryManager.ClipItem
 
 /**
  * Privacy-first, RAM-only clipboard history manager (max 10 recent clips, up to 5 image URIs).
- * Never persists clips to disk, never decodes Bitmaps, and automatically skips sensitive clips
- * (API 33+ EXTRA_IS_SENSITIVE).
+ * Supports pinning items to top, single-item delete, and optional time-based auto-clear for
+ * unpinned clips. Never persists clips to disk, never decodes Bitmaps, and automatically skips
+ * sensitive clips (API 33+ EXTRA_IS_SENSITIVE).
  */
-class ClipboardHistoryManager(context: Context) {
+class ClipboardHistoryManager private constructor(
+    private val appContext: Context?,
+    private val systemClipboard: ClipboardManager?
+) {
+
+    constructor(context: Context) : this(
+        context.applicationContext,
+        context.applicationContext.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
+    )
+
+    internal constructor() : this(null, null)
 
     data class ClipItem(
         val text: String? = null,
         val imageUri: String? = null,
-        val mimeType: String? = null
+        val mimeType: String? = null,
+        val isPinned: Boolean = false,
+        val timestampMs: Long = System.currentTimeMillis()
     ) {
         val isImage: Boolean get() = imageUri != null
     }
@@ -31,11 +44,8 @@ class ClipboardHistoryManager(context: Context) {
         private const val EXTRA_IS_SENSITIVE_COMPAT = "android.content.extra.IS_SENSITIVE"
     }
 
-    private val appContext = context.applicationContext
-    private val systemClipboard =
-        appContext.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
-
     private val items = ArrayList<ClipItem>(MAX_CLIPS)
+    private var autoClearMinutes: Int = 0
     private var isEnabled = false
     private var isRegistered = false
 
@@ -71,7 +81,53 @@ class ClipboardHistoryManager(context: Context) {
     }
 
     @Synchronized
+    fun setAutoClearMinutes(minutes: Int) {
+        autoClearMinutes = minutes.coerceAtLeast(0)
+        pruneExpired()
+    }
+
+    @Synchronized
+    fun pruneExpired(nowMs: Long = System.currentTimeMillis()) {
+        val mins = autoClearMinutes
+        if (mins <= 0 || items.isEmpty()) return
+        val cutoffMs = mins * 60_000L
+        for (i in items.size - 1 downTo 0) {
+            val item = items[i]
+            if (!item.isPinned && nowMs - item.timestampMs >= cutoffMs) {
+                items.removeAt(i)
+            }
+        }
+    }
+
+    @Synchronized
+    fun togglePin(index: Int): Boolean {
+        if (index !in 0 until items.size) return false
+        val current = items.removeAt(index)
+        val nowPinned = !current.isPinned
+        val updated = current.copy(isPinned = nowPinned)
+        val pinnedCount = countPinned()
+        if (nowPinned) {
+            items.add(pinnedCount, updated)
+        } else {
+            var insertIdx = pinnedCount
+            while (insertIdx < items.size && items[insertIdx].timestampMs > updated.timestampMs) {
+                insertIdx++
+            }
+            items.add(insertIdx, updated)
+        }
+        return nowPinned
+    }
+
+    @Synchronized
+    fun removeAt(index: Int): Boolean {
+        if (index !in 0 until items.size) return false
+        items.removeAt(index)
+        return true
+    }
+
+    @Synchronized
     fun getClips(): List<String> {
+        pruneExpired()
         if (items.isEmpty()) return emptyList()
         val result = ArrayList<String>(items.size)
         for (i in 0 until items.size) {
@@ -85,60 +141,129 @@ class ClipboardHistoryManager(context: Context) {
 
     @Synchronized
     fun getClipItems(): List<ClipItem> {
+        pruneExpired()
         if (items.isEmpty()) return emptyList()
         return ArrayList(items)
     }
 
     @Synchronized
-    fun clear() {
-        items.clear()
+    fun clear(includePinned: Boolean = false) {
+        if (includePinned) {
+            items.clear()
+        } else {
+            for (i in items.size - 1 downTo 0) {
+                if (!items[i].isPinned) {
+                    items.removeAt(i)
+                }
+            }
+        }
     }
 
     @Synchronized
-    internal fun addImageClip(uriString: String, mimeType: String) {
+    internal fun addImageClip(
+        uriString: String,
+        mimeType: String,
+        timestampMs: Long = System.currentTimeMillis()
+    ) {
         if (uriString.isBlank() || !mimeType.startsWith("image/", ignoreCase = true)) return
+        pruneExpired(timestampMs)
+        val normalizedMime = mimeType.lowercase(Locale.ROOT)
         for (i in items.size - 1 downTo 0) {
-            if (items[i].imageUri == uriString) {
+            val existing = items[i]
+            if (existing.imageUri == uriString) {
+                if (existing.isPinned) {
+                    items[i] = existing.copy(mimeType = normalizedMime, timestampMs = timestampMs)
+                    return
+                }
                 items.removeAt(i)
             }
         }
-        items.add(0, ClipItem(imageUri = uriString, mimeType = mimeType.lowercase(Locale.ROOT)))
+
+        val insertIdx = countPinned()
+        items.add(
+            insertIdx,
+            ClipItem(
+                imageUri = uriString,
+                mimeType = normalizedMime,
+                isPinned = false,
+                timestampMs = timestampMs
+            )
+        )
 
         var imageCount = 0
         for (i in 0 until items.size) {
             if (items[i].isImage) imageCount++
         }
-        var idx = items.size - 1
-        while (imageCount > MAX_IMAGE_CLIPS && idx >= 0) {
-            if (items[idx].isImage) {
-                items.removeAt(idx)
-                imageCount--
+        while (imageCount > MAX_IMAGE_CLIPS) {
+            var evicted = false
+            for (i in items.size - 1 downTo 0) {
+                if (!items[i].isPinned && items[i].isImage) {
+                    items.removeAt(i)
+                    imageCount--
+                    evicted = true
+                    break
+                }
             }
-            idx--
+            if (!evicted) break
         }
-        while (items.size > MAX_CLIPS) {
-            items.removeAt(items.size - 1)
-        }
+
+        trimToMaxClips()
     }
 
     @Synchronized
-    internal fun addTextClip(text: String) {
+    internal fun addTextClip(text: String, timestampMs: Long = System.currentTimeMillis()) {
         if (text.isBlank() || text.length > MAX_CLIP_LENGTH) return
+        pruneExpired(timestampMs)
         for (i in items.size - 1 downTo 0) {
             val existing = items[i]
             if (!existing.isImage && existing.text == text) {
+                if (existing.isPinned) {
+                    items[i] = existing.copy(timestampMs = timestampMs)
+                    return
+                }
                 items.removeAt(i)
             }
         }
-        items.add(0, ClipItem(text = text))
+
+        val insertIdx = countPinned()
+        items.add(
+            insertIdx,
+            ClipItem(text = text, isPinned = false, timestampMs = timestampMs)
+        )
+        trimToMaxClips()
+    }
+
+    private fun countPinned(): Int {
+        var count = 0
+        for (i in 0 until items.size) {
+            if (items[i].isPinned) {
+                count++
+            } else {
+                break
+            }
+        }
+        return count
+    }
+
+    private fun trimToMaxClips() {
         while (items.size > MAX_CLIPS) {
-            items.removeAt(items.size - 1)
+            var evicted = false
+            for (i in items.size - 1 downTo 0) {
+                if (!items[i].isPinned) {
+                    items.removeAt(i)
+                    evicted = true
+                    break
+                }
+            }
+            if (!evicted) {
+                items.removeAt(items.size - 1)
+            }
         }
     }
 
     private fun resolveImageMimeType(uri: Uri, description: ClipDescription?): String? {
         val contentMime = try {
-            appContext.contentResolver.getType(uri)
+            appContext?.contentResolver?.getType(uri)
         } catch (_: Exception) {
             null
         }
@@ -190,7 +315,8 @@ class ClipboardHistoryManager(context: Context) {
                 }
             }
 
-            val raw = item.text?.toString() ?: item.coerceToText(appContext)?.toString() ?: return
+            val ctx = appContext ?: return
+            val raw = item.text?.toString() ?: item.coerceToText(ctx)?.toString() ?: return
             addTextClip(raw)
         } catch (_: Exception) {
             // Silently ignore platform clipboard access restrictions

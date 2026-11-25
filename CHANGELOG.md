@@ -4,6 +4,23 @@ All notable changes to **True Light Keyboard** are documented in this file.
 
 ---
 
+## [1.4.0] — 2026-11-25
+
+### New
+- **One-Handed Mode (Left / Right)**: Shrinks keyboard width to ~82% with quick side-gutter vector controls to flip sides or expand back to full width (0 KB RAM).
+- **Pinned Clipboard & Privacy Auto-Clear**: Pin favorite clips to keep them at the top across clears, delete individual items, and optionally auto-clear unpinned clips after 15, 30, or 60 minutes.
+- **Shift + Spacebar Text Selection**: Hold Shift and glide horizontally on the Spacebar to select text left or right (0 KB RAM).
+- **Offline English Emoji Search**: Tap the vector search icon inside the Emoji panel to filter emojis in real time directly above the keyboard with zero extra views.
+- **Emoji Skin-Tone Picker**: Long-press supported hand and people emojis to pick a skin tone cleanly.
+
+### Improved
+- **Polished Emoji Panel UI**: Airier 7-column grid, Material 3 pill category tabs, crisp vector icons (Search & Recent), and cleaner category headers.
+
+### Performance
+- **Aggressive Standby RAM Trim**: Automatically releases transient Emoji/search caches and thumbnails shortly after the keyboard hides to keep standby memory minimal.
+
+---
+
 ## [1.3.0] — 2026-11-23
 
 ### New

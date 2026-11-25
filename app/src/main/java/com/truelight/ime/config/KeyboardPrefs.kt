@@ -60,6 +60,19 @@ class KeyboardPrefs(context: Context) {
         const val KEY_SOUND_ENABLED = "sound_enabled"
         const val KEY_HAPTIC_STRENGTH = "haptic_strength"
 
+        const val KEY_ONE_HANDED_MODE = "one_handed_mode"
+        const val ONE_HANDED_OFF = 0
+        const val ONE_HANDED_LEFT = 1
+        const val ONE_HANDED_RIGHT = 2
+
+        const val KEY_CLIPBOARD_AUTO_CLEAR_MIN = "clipboard_auto_clear_min"
+        const val CLIP_AUTO_CLEAR_OFF = 0
+        const val CLIP_AUTO_CLEAR_15M = 15
+        const val CLIP_AUTO_CLEAR_30M = 30
+        const val CLIP_AUTO_CLEAR_60M = 60
+
+        const val KEY_AGGRESSIVE_STANDBY_TRIM = "aggressive_standby_trim"
+
         const val EMOJI_BTN_TOP_BAR = 0
         const val EMOJI_BTN_BOTTOM_ROW = 1
         const val EMOJI_BTN_HIDDEN = 2
@@ -303,4 +316,28 @@ class KeyboardPrefs(context: Context) {
         set(value) = prefs.edit()
             .putInt(KEY_HAPTIC_STRENGTH, value.coerceIn(HAPTIC_LIGHT, HAPTIC_STRONG))
             .apply()
+
+    var oneHandedMode: Int
+        get() = prefs.getInt(KEY_ONE_HANDED_MODE, ONE_HANDED_OFF)
+            .coerceIn(ONE_HANDED_OFF, ONE_HANDED_RIGHT)
+        set(value) = prefs.edit()
+            .putInt(KEY_ONE_HANDED_MODE, value.coerceIn(ONE_HANDED_OFF, ONE_HANDED_RIGHT))
+            .apply()
+
+    var clipboardAutoClearMinutes: Int
+        get() = sanitizeClipboardAutoClearMinutes(
+            prefs.getInt(KEY_CLIPBOARD_AUTO_CLEAR_MIN, CLIP_AUTO_CLEAR_OFF)
+        )
+        set(value) = prefs.edit()
+            .putInt(KEY_CLIPBOARD_AUTO_CLEAR_MIN, sanitizeClipboardAutoClearMinutes(value))
+            .apply()
+
+    var aggressiveStandbyTrimEnabled: Boolean
+        get() = prefs.getBoolean(KEY_AGGRESSIVE_STANDBY_TRIM, true)
+        set(value) = prefs.edit().putBoolean(KEY_AGGRESSIVE_STANDBY_TRIM, value).apply()
+
+    private fun sanitizeClipboardAutoClearMinutes(minutes: Int): Int = when (minutes) {
+        CLIP_AUTO_CLEAR_15M, CLIP_AUTO_CLEAR_30M, CLIP_AUTO_CLEAR_60M -> minutes
+        else -> CLIP_AUTO_CLEAR_OFF
+    }
 }

@@ -30,8 +30,39 @@ object ChangelogData {
 
     val RELEASES: List<ReleaseNote> = listOf(
         ReleaseNote(
-            version = "1.3.0",
+            version = "1.4.0",
             tag = "Latest",
+            date = "Nov 2026",
+            headline = "One-Handed Mode, Emoji Search, Clipboard Pinning & Smarter Standby Trim",
+            changes = listOf(
+                ChangeItem(
+                    ChangeType.NEW,
+                    "One-Handed Mode (Left / Right) with an 82% thumb-friendly layout, 1-tap Top Utility Bar toggle, and side gutter Expand & Flip controls."
+                ),
+                ChangeItem(
+                    ChangeType.NEW,
+                    "Inline offline English Emoji Search directly in the top strip plus long-press 6-shade skin-tone floating pill selector."
+                ),
+                ChangeItem(
+                    ChangeType.NEW,
+                    "Shift + Spacebar horizontal drag selection to highlight text smoothly left or right."
+                ),
+                ChangeItem(
+                    ChangeType.NEW,
+                    "Clipboard Pin & per-item Delete buttons, long-press to pin, Clear preserves pinned clips, and configurable auto-clear timers (Off / 15m / 30m / 60m)."
+                ),
+                ChangeItem(
+                    ChangeType.IMPROVED,
+                    "Redesigned Emoji Panel with an airy 7-column grid, Material 3 pill tab indicator, subtle scrollbar, and crisp pure-Canvas vector icons."
+                ),
+                ChangeItem(
+                    ChangeType.PERFORMANCE,
+                    "Aggressive standby memory trim releases Emoji, Search index, and transient caches shortly after hiding the keyboard."
+                )
+            )
+        ),
+        ReleaseNote(
+            version = "1.3.0",
             date = "Nov 2026",
             headline = "100% Customization, Bulletproof Telex/VNI & -42% Active RAM",
             changes = listOf(

@@ -437,6 +437,41 @@ class InputConnectionBroker {
     }
 
     /**
+     * Shift + Spacebar Cursor Selection:
+     * Finishes active composing text and dispatches Shift+DPAD_LEFT/RIGHT key events inside a
+     * batch edit so selection extends reliably across EditText, Chrome, Notes, and chat apps.
+     */
+    fun selectCursor(delta: Int) {
+        if (delta == 0) return
+        val ic = inputConnection ?: return
+        lastCommittedFromSuggestion = false
+        lastSpaceTimeMs = 0L
+
+        val keyCode = if (delta < 0) KeyEvent.KEYCODE_DPAD_LEFT else KeyEvent.KEYCODE_DPAD_RIGHT
+        val steps = abs(delta).coerceAtMost(20)
+        val metaState = KeyEvent.META_SHIFT_ON or KeyEvent.META_SHIFT_LEFT_ON
+
+        withBatchEdit {
+            ic.finishComposingText()
+            val now = SystemClock.uptimeMillis()
+            for (i in 0 until steps) {
+                ic.sendKeyEvent(
+                    KeyEvent(
+                        now, now, KeyEvent.ACTION_DOWN, keyCode, 0, metaState,
+                        KeyCharacterMap.VIRTUAL_KEYBOARD, 0, KeyEvent.FLAG_SOFT_KEYBOARD
+                    )
+                )
+                ic.sendKeyEvent(
+                    KeyEvent(
+                        now, now, KeyEvent.ACTION_UP, keyCode, 0, metaState,
+                        KeyCharacterMap.VIRTUAL_KEYBOARD, 0, KeyEvent.FLAG_SOFT_KEYBOARD
+                    )
+                )
+            }
+        }
+    }
+
+    /**
      * Enter Key Handling:
      * Resolves Chat Apps (Zalo, Messenger, Telegram) vs Multiline Notes vs Search Bars.
      */

@@ -92,6 +92,9 @@ class PrefsProvider : ContentProvider() {
                     putBoolean(KeyboardPrefs.KEY_SHOW_PERIOD_KEY, prefs.showPeriodKey)
                     putBoolean(KeyboardPrefs.KEY_SOUND_ENABLED, prefs.soundEnabled)
                     putInt(KeyboardPrefs.KEY_HAPTIC_STRENGTH, prefs.hapticStrength)
+                    putInt(KeyboardPrefs.KEY_ONE_HANDED_MODE, prefs.oneHandedMode)
+                    putInt(KeyboardPrefs.KEY_CLIPBOARD_AUTO_CLEAR_MIN, prefs.clipboardAutoClearMinutes)
+                    putBoolean(KeyboardPrefs.KEY_AGGRESSIVE_STANDBY_TRIM, prefs.aggressiveStandbyTrimEnabled)
                     putInt(KeyboardPrefs.KEY_DICT_REVISION, prefs.dictRevision)
                     putInt(KeyboardPrefs.KEY_HISTORY_REVISION, prefs.historyRevision)
                     putMemoryStats(this)
@@ -136,6 +139,7 @@ class PrefsProvider : ContentProvider() {
                     KeyboardPrefs.KEY_SHOW_COMMA_KEY -> prefs.showCommaKey = value
                     KeyboardPrefs.KEY_SHOW_PERIOD_KEY -> prefs.showPeriodKey = value
                     KeyboardPrefs.KEY_SOUND_ENABLED -> prefs.soundEnabled = value
+                    KeyboardPrefs.KEY_AGGRESSIVE_STANDBY_TRIM -> prefs.aggressiveStandbyTrimEnabled = value
                     else -> prefs.prefs.edit().putBoolean(key, value).apply()
                 }
                 ctx.contentResolver.notifyChange(CONTENT_URI, null)
@@ -158,6 +162,8 @@ class PrefsProvider : ContentProvider() {
                     KeyboardPrefs.KEY_LONG_PRESS_DELAY_MS -> prefs.longPressDelayMs = value
                     KeyboardPrefs.KEY_EMOJI_BUTTON_MODE -> prefs.emojiButtonMode = value
                     KeyboardPrefs.KEY_HAPTIC_STRENGTH -> prefs.hapticStrength = value
+                    KeyboardPrefs.KEY_ONE_HANDED_MODE -> prefs.oneHandedMode = value
+                    KeyboardPrefs.KEY_CLIPBOARD_AUTO_CLEAR_MIN -> prefs.clipboardAutoClearMinutes = value
                     KeyboardPrefs.KEY_DICT_REVISION -> prefs.dictRevision = value
                     KeyboardPrefs.KEY_HISTORY_REVISION -> prefs.historyRevision = value
                     else -> prefs.prefs.edit().putInt(key, value).apply()

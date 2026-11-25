@@ -30,5 +30,6 @@ data class KeyboardConfig(
     val hapticStrength: Int,
     val soundEnabled: Boolean,
     val languageSpec: LanguageSpec,
-    val multipleLanguages: Boolean
+    val multipleLanguages: Boolean,
+    val oneHandedMode: Int = KeyboardPrefs.ONE_HANDED_OFF
 )

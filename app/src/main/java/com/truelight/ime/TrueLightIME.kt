@@ -7,6 +7,8 @@ import android.content.res.Configuration
 import android.graphics.Color
 import android.inputmethodservice.InputMethodService
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import android.text.InputType
 import android.view.View
 import android.view.WindowInsetsController
@@ -16,6 +18,7 @@ import com.truelight.ime.clipboard.ClipboardHistoryManager
 import com.truelight.ime.config.KeyboardConfig
 import com.truelight.ime.config.KeyboardPrefs
 import com.truelight.ime.config.PrefsProvider
+import com.truelight.ime.emoji.EmojiSearchIndex
 import com.truelight.ime.engine.InputEngine
 import com.truelight.ime.engine.SimpleWordEngine
 import com.truelight.ime.lang.LanguageRegistry
@@ -36,6 +39,8 @@ class TrueLightIME : InputMethodService(),
     companion object {
         @Volatile
         var isKeyboardVisible: Boolean = false
+
+        private const val STANDBY_TRIM_DELAY_MS = 8_000L
     }
 
     private var keyboardView: KeyboardCanvasView? = null
@@ -43,9 +48,24 @@ class TrueLightIME : InputMethodService(),
     private lateinit var suggestionManager: SuggestionManager
     private lateinit var clipboardManager: ClipboardHistoryManager
     private val broker = InputConnectionBroker()
+    private val mainHandler = Handler(Looper.getMainLooper())
 
     private var activeLanguage: LanguageSpec = LanguageRegistry.EN_US
     private var activeEngine: InputEngine = SimpleWordEngine()
+
+    private val standbyTrimRunnable = Runnable {
+        if (!isKeyboardVisible) {
+            keyboardView?.releaseStandbyMemory()
+            EmojiSearchIndex.release()
+            if (::clipboardManager.isInitialized) {
+                clipboardManager.pruneExpired()
+            }
+            if (::suggestionManager.isInitialized) {
+                suggestionManager.clearSuggestions()
+                suggestionManager.clearUndo()
+            }
+        }
+    }
 
     override fun onCreate() {
         super.onCreate()
@@ -53,6 +73,7 @@ class TrueLightIME : InputMethodService(),
         suggestionManager = SuggestionManager(this)
         clipboardManager = ClipboardHistoryManager(this)
         clipboardManager.setEnabled(prefs.clipboardEnabled)
+        clipboardManager.setAutoClearMinutes(prefs.clipboardAutoClearMinutes)
         prefs.prefs.registerOnSharedPreferenceChangeListener(this)
         loadLanguageAndSuggestions()
     }
@@ -69,6 +90,8 @@ class TrueLightIME : InputMethodService(),
     }
 
     override fun onDestroy() {
+        mainHandler.removeCallbacks(standbyTrimRunnable)
+        EmojiSearchIndex.release()
         setKeyboardVisibility(false)
         prefs.prefs.unregisterOnSharedPreferenceChangeListener(this)
         clipboardManager.setEnabled(false)
@@ -88,11 +111,13 @@ class TrueLightIME : InputMethodService(),
 
     override fun onStartInputView(info: EditorInfo, restarting: Boolean) {
         super.onStartInputView(info, restarting)
+        mainHandler.removeCallbacks(standbyTrimRunnable)
         setKeyboardVisibility(true)
 
         activeEngine.reset()
         broker.updateTarget(currentInputConnection, info)
         suggestionManager.updateEditorPrivacy(info)
+        clipboardManager.setAutoClearMinutes(prefs.clipboardAutoClearMinutes)
         loadLanguageAndSuggestions()
 
         val view = keyboardView ?: return
@@ -109,6 +134,7 @@ class TrueLightIME : InputMethodService(),
 
     override fun onWindowShown() {
         super.onWindowShown()
+        mainHandler.removeCallbacks(standbyTrimRunnable)
         setKeyboardVisibility(true)
     }
 
@@ -129,12 +155,21 @@ class TrueLightIME : InputMethodService(),
         suggestionManager.clearSuggestions()
         suggestionManager.clearUndo()
         keyboardView?.releaseTransientUiMemory()
+        if (::clipboardManager.isInitialized) {
+            clipboardManager.pruneExpired()
+        }
+        mainHandler.removeCallbacks(standbyTrimRunnable)
+        if (::prefs.isInitialized && prefs.aggressiveStandbyTrimEnabled) {
+            mainHandler.postDelayed(standbyTrimRunnable, STANDBY_TRIM_DELAY_MS)
+        }
     }
 
     override fun onTrimMemory(level: Int) {
         super.onTrimMemory(level)
         if (level >= ComponentCallbacks2.TRIM_MEMORY_UI_HIDDEN) {
             keyboardView?.releaseTransientUiMemory()
+            keyboardView?.releaseStandbyMemory()
+            EmojiSearchIndex.release()
             if (::prefs.isInitialized && !prefs.suggestionsEnabled && ::suggestionManager.isInitialized) {
                 suggestionManager.configure(
                     dictKey = activeLanguage.dictKey,
@@ -162,7 +197,7 @@ class TrueLightIME : InputMethodService(),
             }
             KeyboardPrefs.KEY_HISTORY_REVISION -> {
                 keyboardView?.clearEmojiHistoryCache()
-                clipboardManager.clear()
+                clipboardManager.clear(includePinned = true)
                 keyboardView?.invalidate()
             }
             KeyboardPrefs.KEY_THEME_MODE,
@@ -174,6 +209,18 @@ class TrueLightIME : InputMethodService(),
             KeyboardPrefs.KEY_CLIPBOARD_ENABLED -> {
                 clipboardManager.setEnabled(prefs.clipboardEnabled)
                 keyboardView?.invalidate()
+            }
+            KeyboardPrefs.KEY_CLIPBOARD_AUTO_CLEAR_MIN -> {
+                clipboardManager.setAutoClearMinutes(prefs.clipboardAutoClearMinutes)
+                keyboardView?.invalidate()
+            }
+            KeyboardPrefs.KEY_ONE_HANDED_MODE -> {
+                applySettingsToView()
+            }
+            KeyboardPrefs.KEY_AGGRESSIVE_STANDBY_TRIM -> {
+                if (!prefs.aggressiveStandbyTrimEnabled) {
+                    mainHandler.removeCallbacks(standbyTrimRunnable)
+                }
             }
             KeyboardPrefs.KEY_AUTO_CAPS -> {
                 updateAutoCaps()
@@ -271,7 +318,8 @@ class TrueLightIME : InputMethodService(),
             hapticStrength = prefs.hapticStrength,
             soundEnabled = prefs.soundEnabled,
             languageSpec = activeLanguage,
-            multipleLanguages = prefs.enabledLanguages.size > 1
+            multipleLanguages = prefs.enabledLanguages.size > 1,
+            oneHandedMode = prefs.oneHandedMode
         )
         view.applyConfig(this, config)
         updateNavigationBarColor()
@@ -396,6 +444,26 @@ class TrueLightIME : InputMethodService(),
         broker.moveCursor(delta, activeEngine, suggestionManager)
         updateAutoCaps()
         keyboardView?.invalidate()
+    }
+
+    override fun onSelectCursor(delta: Int) {
+        if (activeEngine.length() > 0) {
+            broker.finishComposingText()
+            activeEngine.reset()
+            suggestionManager.clearSuggestions()
+        }
+        suggestionManager.clearUndo()
+        broker.selectCursor(delta)
+        keyboardView?.invalidate()
+    }
+
+    override fun onOneHandedModeChanged(mode: Int) {
+        prefs.oneHandedMode = mode
+        try {
+            contentResolver.notifyChange(PrefsProvider.CONTENT_URI, null)
+        } catch (_: Exception) {
+            // Ignore if resolver is unavailable
+        }
     }
 
     override fun onEnter() {
