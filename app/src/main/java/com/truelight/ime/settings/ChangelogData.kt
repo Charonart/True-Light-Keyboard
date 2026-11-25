@@ -30,8 +30,27 @@ object ChangelogData {
 
     val RELEASES: List<ReleaseNote> = listOf(
         ReleaseNote(
-            version = "1.4.0",
+            version = "1.4.1",
             tag = "Latest",
+            date = "Nov 2026",
+            headline = "Android 5–6 Compatibility Fixes, Cleaner Memory Card & GPLv3 Launch",
+            changes = listOf(
+                ChangeItem(
+                    ChangeType.FIXED,
+                    "Guarded Android 7.0+ clipboard and updater API calls so Android 5.0–6.0 (API 21–23) devices run cleanly with zero compatibility crashes."
+                ),
+                ChangeItem(
+                    ChangeType.IMPROVED,
+                    "Simplified the Home Keyboard Memory card to show only live real-time telemetry with an instant Light / Normal status badge."
+                ),
+                ChangeItem(
+                    ChangeType.IMPROVED,
+                    "Licensed under GNU GPLv3 with refreshed public documentation and zero Android Lint errors."
+                )
+            )
+        ),
+        ReleaseNote(
+            version = "1.4.0",
             date = "Nov 2026",
             headline = "One-Handed Mode, Emoji Search, Clipboard Pinning & Smarter Standby Trim",
             changes = listOf(

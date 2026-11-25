@@ -4,6 +4,17 @@ All notable changes to **True Light Keyboard** are documented in this file.
 
 ---
 
+## [1.4.1] — 2026-11-25
+
+### Fixed
+- **Android 5.0 – 6.0 (API 21–23) Compatibility**: Guarded `ClipDescription.extras` in clipboard monitoring and `HttpURLConnection.contentLengthLong` in the in-app updater with API 24 checks so older Android devices run with zero `NoSuchMethodError` crashes (0 Android Lint errors across API 21–36+).
+
+### Improved
+- **Cleaner Home Memory Card**: Replaced static reference bars with a minimal live memory summary (`Active`/`Standby` + `Light`/`Normal` badge) backed 100% by real OS memory telemetry.
+- **Public Launch Hygiene**: Added official **GNU GPLv3** `LICENSE`, updated `README.md` with reproducible footprint instructions and Android compatibility matrix, and cleaned up stray local scripts.
+
+---
+
 ## [1.4.0] — 2026-11-25
 
 ### New

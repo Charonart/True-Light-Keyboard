@@ -68,9 +68,8 @@ class SettingsActivity : AppCompatActivity() {
         private const val REQ_IMPORT_DICT = 1001
         private const val RAM_REFRESH_INTERVAL_MS = 2500L
         private const val RAM_DEBOUNCE_MS = 250L
-        private const val REF_AOSP_MB = 55
-        private const val REF_GBOARD_MB = 167
-        private const val RAM_SCALE_MAX_MB = 180
+        private const val RAM_LIGHT_THRESHOLD_MB = 30f
+        private const val RAM_NORMAL_THRESHOLD_MB = 60f
 
         private const val CSS_PRESET_PAPER_LIGHT = """keyboard {
   bg: #E9EDF2;
@@ -164,8 +163,7 @@ class SettingsActivity : AppCompatActivity() {
     // Home Tab live memory & setup views
     private lateinit var ramHeadlineView: TextView
     private lateinit var ramStatusChip: TextView
-    private lateinit var ramLiveBarLabel: TextView
-    private lateinit var ramLiveIndicator: LinearProgressIndicator
+    private lateinit var ramHealthChip: TextView
     private lateinit var ramFeatureSummaryView: TextView
     private lateinit var ramDetailsToggleView: TextView
     private lateinit var ramDetailsTextView: TextView
@@ -299,9 +297,9 @@ class SettingsActivity : AppCompatActivity() {
         return try {
             @Suppress("DEPRECATION")
             val info = packageManager.getPackageInfo(packageName, 0)
-            info.versionName ?: "1.2.0"
+            info.versionName ?: "1.4.1"
         } catch (_: Exception) {
-            "1.2.0"
+            "1.4.1"
         }
     }
 
@@ -754,15 +752,15 @@ class SettingsActivity : AppCompatActivity() {
     private fun buildRamTelemetryCard(): View {
         val (card, body) = createCard(title = "Keyboard Memory")
 
-        // Headline RAM + Active/Standby chip
+        // Headline RAM + Active/Standby chip + Light/Normal health badge
         val headlineRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            setPadding(0, 0, 0, dp(12))
+            setPadding(0, 0, 0, dp(10))
         }
         ramHeadlineView = TextView(this).apply {
             text = "--.- MB"
-            textSize = 30f
+            textSize = 32f
             typeface = Typeface.MONOSPACE
             setTextColor(colPrimary)
             layoutParams = LinearLayout.LayoutParams(
@@ -772,23 +770,30 @@ class SettingsActivity : AppCompatActivity() {
                 marginEnd = dp(10)
             }
         }
-        ramStatusChip = createChip("Standby", colSurfaceContainer, colOnSurfaceVariant, colOutlineVariant)
+        ramStatusChip = createChip("Standby", colSurfaceContainer, colOnSurfaceVariant, colOutlineVariant).apply {
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply {
+                marginEnd = dp(6)
+            }
+        }
+        ramHealthChip = createChip("Light", colOkBg, colOkText).apply {
+            visibility = View.GONE
+        }
         headlineRow.addView(ramHeadlineView)
         headlineRow.addView(ramStatusChip)
+        headlineRow.addView(ramHealthChip)
         body.addView(headlineRow)
 
-        // 3 clean comparison bars
-        val liveBar = buildProgressBarRow("True Light", "--.- MB", colPrimary, 10)
-        ramLiveBarLabel = liveBar.second
-        ramLiveIndicator = liveBar.third
-        body.addView(liveBar.first)
-
-        body.addView(
-            buildProgressBarRow("Android Default", "~55 MB", colOnSurfaceVariant, REF_AOSP_MB).first
-        )
-        body.addView(
-            buildProgressBarRow("Gboard", "~167 MB", colError, REF_GBOARD_MB).first
-        )
+        // Subtle hairline divider between reading and feature summary
+        body.addView(View(this).apply {
+            setBackgroundColor(colOutlineVariant)
+            alpha = 0.35f
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(1)).apply {
+                bottomMargin = dp(10)
+            }
+        })
 
         // Compact 1-line feature summary + collapsed-by-default "Details ▾" toggle
         val footerRow = LinearLayout(this).apply {
@@ -856,58 +861,6 @@ class SettingsActivity : AppCompatActivity() {
         }
 
         return card
-    }
-
-    private fun buildProgressBarRow(
-        label: String,
-        valueText: String,
-        indicatorColor: Int,
-        initialProgress: Int
-    ): Triple<LinearLayout, TextView, LinearProgressIndicator> {
-        val wrapper = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            layoutParams = LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT
-            ).apply {
-                bottomMargin = dp(10)
-            }
-        }
-        val header = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            setPadding(0, 0, 0, dp(5))
-        }
-        header.addView(TextView(this).apply {
-            text = label
-            textSize = 13f
-            setTextColor(colOnSurface)
-            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
-        })
-        val valueTv = TextView(this).apply {
-            text = valueText
-            textSize = 12f
-            typeface = Typeface.MONOSPACE
-            setTextColor(colOnSurfaceVariant)
-        }
-        header.addView(valueTv)
-        wrapper.addView(header)
-
-        val indicator = LinearProgressIndicator(this).apply {
-            isIndeterminate = false
-            max = RAM_SCALE_MAX_MB
-            progress = initialProgress.coerceIn(0, RAM_SCALE_MAX_MB)
-            trackThickness = dp(8)
-            trackCornerRadius = dp(4)
-            setIndicatorColor(indicatorColor)
-            trackColor = colSurfaceHigh
-            layoutParams = LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT
-            )
-        }
-        wrapper.addView(indicator)
-        return Triple(wrapper, valueTv, indicator)
     }
 
     private fun buildSetupAndSandboxCard(): View {
@@ -1939,8 +1892,28 @@ class SettingsActivity : AppCompatActivity() {
             ramStatusChip.setTextColor(colOnSurfaceVariant)
         }
 
-        ramLiveBarLabel.text = totalStr
-        ramLiveIndicator.progress = if (hasReading) totalMb.roundToInt().coerceIn(2, RAM_SCALE_MAX_MB) else 0
+        if (hasReading) {
+            ramHealthChip.visibility = View.VISIBLE
+            when {
+                totalMb < RAM_LIGHT_THRESHOLD_MB -> {
+                    ramHealthChip.text = "Light"
+                    ramHealthChip.background = pillBg(colOkBg, 100)
+                    ramHealthChip.setTextColor(colOkText)
+                }
+                totalMb < RAM_NORMAL_THRESHOLD_MB -> {
+                    ramHealthChip.text = "Normal"
+                    ramHealthChip.background = pillBg(colSurfaceContainer, 100, colOutlineVariant)
+                    ramHealthChip.setTextColor(colOnSurfaceVariant)
+                }
+                else -> {
+                    ramHealthChip.text = "High"
+                    ramHealthChip.background = pillBg(colWarnBg, 100)
+                    ramHealthChip.setTextColor(colWarnText)
+                }
+            }
+        } else {
+            ramHealthChip.visibility = View.GONE
+        }
 
         val sugStatus = if (remotePrefs.suggestionsEnabled) "On" else "Off"
         val clipStatus = if (remotePrefs.clipboardEnabled) "On" else "Off"

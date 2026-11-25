@@ -92,7 +92,12 @@ object GitHubUpdater {
                 if (code !in 200..299) {
                     return DownloadResult.Error("Download failed (HTTP $code)")
                 }
-                val total = if (conn.contentLengthLong > 0) conn.contentLengthLong else asset.sizeBytes
+                val contentLen = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                    conn.contentLengthLong
+                } else {
+                    conn.contentLength.toLong()
+                }
+                val total = if (contentLen > 0L) contentLen else asset.sizeBytes
                 val digest = MessageDigest.getInstance("SHA-256")
                 var downloaded = 0L
                 val buf = ByteArray(16 * 1024)

@@ -293,7 +293,11 @@ class ClipboardHistoryManager private constructor(
             val clip = cm.primaryClip ?: return
             if (clip.itemCount <= 0) return
 
-            val extras = clip.description?.extras
+            val extras = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                clip.description?.extras
+            } else {
+                null
+            }
             if (extras != null) {
                 if (Build.VERSION.SDK_INT >= 33 &&
                     extras.getBoolean(ClipDescription.EXTRA_IS_SENSITIVE, false)
